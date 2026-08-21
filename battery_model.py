@@ -215,7 +215,7 @@ class BatterySimulator:
                 cx = x + self.turn_radius * math.cos(center_angle)
                 cy = y + self.turn_radius * math.sin(center_angle)
                 
-                start_angle = center_angle + math.pi if turn_dir > 0 else center_angle
+                start_angle = center_angle + math.pi
                 end_angle = start_angle + turn_dir * turn_angle_rad
                 
                 num_pts = max(15, int(self.turn_angle / 3.0))

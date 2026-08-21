@@ -5,7 +5,7 @@ from tkinter import messagebox
 import matplotlib
 matplotlib.use("TkAgg")
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 
 try:
     import customtkinter as ctk
@@ -194,7 +194,7 @@ class BatteryApp:
 
             self.cards[key] = v_lbl
 
-        # Main Performance Plots Canvas
+        # Main Performance Plots Canvas (using Figure directly to prevent memory leaks)
         if USE_CTK:
             plot_frame = ctk.CTkFrame(content_area)
             plot_frame.pack(fill="both", expand=True, pady=5)
@@ -202,7 +202,9 @@ class BatteryApp:
             plot_frame = tk.Frame(content_area, bg="#1e1e1e")
             plot_frame.pack(fill="both", expand=True, pady=5)
 
-        self.fig, (self.ax1, self.ax2) = plt.subplots(1, 2, figsize=(9, 4), facecolor="#1e1e1e")
+        self.fig = Figure(figsize=(9, 4), facecolor="#1e1e1e")
+        self.ax1 = self.fig.add_subplot(121)
+        self.ax2 = self.fig.add_subplot(122)
         self.fig.tight_layout(pad=3.0)
         
         self.canvas = FigureCanvasTkAgg(self.fig, master=plot_frame)
@@ -221,7 +223,8 @@ class BatteryApp:
             self.track_info_lbl = tk.Label(self.track_frame, text="Total Lap Distance: -- m", fg="#17a2b8", bg="#2d2d2d", font=("Arial", 9))
             self.track_info_lbl.pack(pady=(0, 5))
 
-        self.fig_track, self.ax_track = plt.subplots(figsize=(4, 5), facecolor="#1e1e1e")
+        self.fig_track = Figure(figsize=(4, 5), facecolor="#1e1e1e")
+        self.ax_track = self.fig_track.add_subplot(111)
         self.fig_track.tight_layout(pad=2.0)
         
         self.canvas_track = FigureCanvasTkAgg(self.fig_track, master=self.track_frame)
@@ -267,6 +270,9 @@ class BatteryApp:
         sim = BatterySimulator(track_config=track_config)
         x_coords, y_coords, total_len = sim.get_track_coordinates()
 
+        if not x_coords:
+            return
+
         self.track_info_lbl.configure(text=f"Total Lap Distance: {total_len:.1f} m")
 
         self.ax_track.clear()
@@ -284,7 +290,7 @@ class BatteryApp:
         self.ax_track.set_ylabel("Y Distance (m)", color="#ffffff", fontsize=8)
         self.ax_track.tick_params(colors="#ffffff", labelsize=8)
         self.ax_track.grid(True, linestyle=":", alpha=0.4)
-        self.ax_track.set_aspect("equal", adjustable="datalim")
+        self.ax_track.set_aspect("equal", adjustable="box")
         self.ax_track.legend(facecolor="#2b2b2b", labelcolor="#ffffff", fontsize=7, loc="upper right")
 
         self.fig_track.tight_layout()
@@ -323,12 +329,15 @@ class BatteryApp:
         sim = BatterySimulator(track_config, vehicle_config, battery_config)
         res = sim.run_simulation()
 
-        # Update Summary Cards
+        # Update Summary Cards safely across both CustomTkinter and standard Tkinter
         self.cards["soc"].configure(text=f"{res['final_soc_pct']:.1f}% ({res['final_capacity_ah']:.2f} Ah)")
         
         temp_color = "#dc3545" if res['final_temp_c'] > 60 else ("#ffc107" if res['final_temp_c'] > 45 else "#28a745")
-        self.cards["temp"].configure(text=f"{res['final_temp_c']:.1f} °C", text_color=temp_color if USE_CTK else temp_color)
-        
+        if USE_CTK:
+            self.cards["temp"].configure(text=f"{res['final_temp_c']:.1f} °C", text_color=temp_color)
+        else:
+            self.cards["temp"].configure(text=f"{res['final_temp_c']:.1f} °C", fg=temp_color)
+
         self.cards["energy"].configure(text=f"{res['total_energy_kwh']:.2f} kWh")
         self.cards["time"].configure(text=f"{res['total_time_s']:.1f} s ({res['lap_time_avg_s']:.1f} s/lap)")
         self.cards["peak_i"].configure(text=f"{res['peak_current_a']:.1f} A")
