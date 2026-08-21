@@ -42,19 +42,20 @@ class BatteryApp:
             self.left_panel.pack(side="left", fill="y", padx=5, pady=5)
             self.left_panel.pack_propagate(False)
 
-            # Toggle Button Header
+            # Input Parameters Header Button (Clickable header button to show/hide inputs)
             self.btn_toggle = ctk.CTkButton(
                 self.left_panel,
-                text="🏎️ Hide Inputs & Show Track View",
+                text="⚙️ Input Parameters  ▲ (Click to Hide)",
                 command=self.toggle_inputs,
-                font=ctk.CTkFont(size=12, weight="bold"),
+                font=ctk.CTkFont(size=13, weight="bold"),
                 fg_color="#1f538d",
-                hover_color="#14375e"
+                hover_color="#14375e",
+                height=36
             )
             self.btn_toggle.pack(fill="x", padx=5, pady=(5, 5))
 
             # Sub-frame 1: Inputs Scrollable Frame
-            self.inputs_frame = ctk.CTkScrollableFrame(self.left_panel, label_text="⚙️ Input Parameters")
+            self.inputs_frame = ctk.CTkScrollableFrame(self.left_panel)
             self.inputs_frame.pack(fill="both", expand=True, padx=2, pady=2)
 
             # Sub-frame 2: Bird's Eye View Track Frame (hidden initially)
@@ -73,11 +74,12 @@ class BatteryApp:
 
             self.btn_toggle = tk.Button(
                 self.left_panel,
-                text="🏎️ Hide Inputs & Show Track View",
+                text="⚙️ Input Parameters  ▲ (Click to Hide)",
                 command=self.toggle_inputs,
                 bg="#007acc",
                 fg="#ffffff",
-                font=("Arial", 10, "bold")
+                font=("Arial", 10, "bold"),
+                height=2
             )
             self.btn_toggle.pack(fill="x", padx=5, pady=(5, 5))
 
@@ -237,9 +239,9 @@ class BatteryApp:
             self.inputs_frame.pack_forget()
             self.track_frame.pack(fill="both", expand=True, padx=2, pady=2)
             if USE_CTK:
-                self.btn_toggle.configure(text="⚙️ Show Inputs", fg_color="#28a745", hover_color="#1e7e34")
+                self.btn_toggle.configure(text="⚙️ Input Parameters  ▼ (Click to Show)", fg_color="#28a745", hover_color="#1e7e34")
             else:
-                self.btn_toggle.configure(text="⚙️ Show Inputs", bg="#28a745")
+                self.btn_toggle.configure(text="⚙️ Input Parameters  ▼ (Click to Show)", bg="#28a745")
             self.inputs_visible = False
             self.draw_track_view()
         else:
@@ -247,9 +249,9 @@ class BatteryApp:
             self.track_frame.pack_forget()
             self.inputs_frame.pack(fill="both", expand=True, padx=2, pady=2)
             if USE_CTK:
-                self.btn_toggle.configure(text="🏎️ Hide Inputs & Show Track View", fg_color="#1f538d", hover_color="#14375e")
+                self.btn_toggle.configure(text="⚙️ Input Parameters  ▲ (Click to Hide)", fg_color="#1f538d", hover_color="#14375e")
             else:
-                self.btn_toggle.configure(text="🏎️ Hide Inputs & Show Track View", bg="#007acc")
+                self.btn_toggle.configure(text="⚙️ Input Parameters  ▲ (Click to Hide)", bg="#007acc")
             self.inputs_visible = True
 
     def draw_track_view(self):

@@ -177,7 +177,7 @@ class BatterySimulator:
 
     def get_track_coordinates(self):
         """
-        Generates (x, y) 2D point lists representing the bird's-eye view layout of the track.
+        Generates (x, y) 2D point lists representing the bird's-eye view layout of a closed-loop Formula SAE track circuit.
         Returns x_coords, y_coords, total_length_m
         """
         x, y = 0.0, 0.0
@@ -186,10 +186,20 @@ class BatterySimulator:
         x_coords = [x]
         y_coords = [y]
 
-        turn_angle_rad = math.radians(self.turn_angle)
-        turn_arc_length = self.turn_radius * turn_angle_rad
         num_segments = max(self.num_straights, self.num_turns)
-        turn_dir = 1.0  # +1 for left turn, -1 for right turn
+        
+        # In a closed loop circuit, total turning angle equals 360 degrees (2*pi)
+        # If num_turns is specified, default turn angle per turn is 360 / num_turns unless custom
+        effective_turn_angle_deg = 360.0 / self.num_turns if self.num_turns > 0 else 90.0
+        # Use user specified angle if provided and valid, otherwise effective turn angle for closed circuit
+        if self.turn_angle != 90.0 or self.num_turns == 4:
+            actual_turn_angle_deg = self.turn_angle
+        else:
+            actual_turn_angle_deg = effective_turn_angle_deg
+
+        turn_angle_rad = math.radians(actual_turn_angle_deg)
+        turn_arc_length = self.turn_radius * turn_angle_rad
+        turn_dir = 1.0  # Turn in consistent direction to form a closed circuit loop
 
         total_length = 0.0
 
@@ -210,7 +220,6 @@ class BatterySimulator:
 
             # 2. Turn
             if seg < self.num_turns:
-                # Turn center is perpendicular to current heading
                 center_angle = heading + turn_dir * (math.pi / 2.0)
                 cx = x + self.turn_radius * math.cos(center_angle)
                 cy = y + self.turn_radius * math.sin(center_angle)
@@ -218,7 +227,7 @@ class BatterySimulator:
                 start_angle = center_angle + math.pi
                 end_angle = start_angle + turn_dir * turn_angle_rad
                 
-                num_pts = max(15, int(self.turn_angle / 3.0))
+                num_pts = max(15, int(actual_turn_angle_deg / 3.0))
                 for i in range(1, num_pts + 1):
                     t = i / num_pts
                     curr_a = start_angle + t * (end_angle - start_angle)
@@ -231,10 +240,18 @@ class BatterySimulator:
                 y = y_coords[-1]
                 heading += turn_dir * turn_angle_rad
                 total_length += turn_arc_length
-                
-                # Alternate direction every 2 turns for chicane/autocross feel
-                if (seg + 1) % 2 == 0:
-                    turn_dir *= -1.0
+
+        # Ensure loop is completely closed by connecting back to start point (0, 0)
+        dist_to_start = math.hypot(x_coords[-1] - x_coords[0], y_coords[-1] - y_coords[0])
+        if dist_to_start > 0.1:
+            num_pts = max(5, int(dist_to_start / 5.0))
+            x_end, y_end = x_coords[-1], y_coords[-1]
+            for i in range(1, num_pts + 1):
+                t = i / num_pts
+                x_coords.append(x_end + t * (x_coords[0] - x_end))
+                y_coords.append(y_end + t * (y_coords[0] - y_end))
+            total_length += dist_to_start
 
         return x_coords, y_coords, total_length
+
 
