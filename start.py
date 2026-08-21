@@ -1,4 +1,5 @@
 import sys
+import math
 import tkinter as tk
 from tkinter import messagebox
 import matplotlib
@@ -21,35 +22,71 @@ class BatteryApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Formula SAE - Battery Capacity & Thermal Model")
-        self.root.geometry("1280x800")
+        self.root.geometry("1280x850")
 
         if not USE_CTK:
             self.root.configure(bg="#1e1e1e")
 
+        self.inputs_visible = True
         self._build_ui()
         self.run_sim()
 
     def _build_ui(self):
         # Main layout container
         if USE_CTK:
-            main_container = ctk.CTkFrame(self.root)
-            main_container.pack(fill="both", expand=True, padx=10, pady=10)
+            self.main_container = ctk.CTkFrame(self.root)
+            self.main_container.pack(fill="both", expand=True, padx=10, pady=10)
 
-            # Left Sidebar (Inputs)
-            sidebar = ctk.CTkScrollableFrame(main_container, width=350, label_text="⚙️ Input Parameters")
-            sidebar.pack(side="left", fill="y", padx=5, pady=5)
+            # Left Panel Container (Fixed width 360)
+            self.left_panel = ctk.CTkFrame(self.main_container, width=360)
+            self.left_panel.pack(side="left", fill="y", padx=5, pady=5)
+            self.left_panel.pack_propagate(False)
 
-            # Right Content Area (Dashboard & Plots)
-            content_area = ctk.CTkFrame(main_container)
+            # Toggle Button Header
+            self.btn_toggle = ctk.CTkButton(
+                self.left_panel,
+                text="🏎️ Hide Inputs & Show Track View",
+                command=self.toggle_inputs,
+                font=ctk.CTkFont(size=12, weight="bold"),
+                fg_color="#1f538d",
+                hover_color="#14375e"
+            )
+            self.btn_toggle.pack(fill="x", padx=5, pady=(5, 5))
+
+            # Sub-frame 1: Inputs Scrollable Frame
+            self.inputs_frame = ctk.CTkScrollableFrame(self.left_panel, label_text="⚙️ Input Parameters")
+            self.inputs_frame.pack(fill="both", expand=True, padx=2, pady=2)
+
+            # Sub-frame 2: Bird's Eye View Track Frame (hidden initially)
+            self.track_frame = ctk.CTkFrame(self.left_panel)
+
+            # Right Content Area (Dashboard & Performance Plots)
+            content_area = ctk.CTkFrame(self.main_container)
             content_area.pack(side="right", fill="both", expand=True, padx=5, pady=5)
         else:
-            main_container = tk.Frame(self.root, bg="#1e1e1e")
-            main_container.pack(fill="both", expand=True, padx=10, pady=10)
+            self.main_container = tk.Frame(self.root, bg="#1e1e1e")
+            self.main_container.pack(fill="both", expand=True, padx=10, pady=10)
 
-            sidebar = tk.Frame(main_container, bg="#2d2d2d", width=350)
-            sidebar.pack(side="left", fill="y", padx=5, pady=5)
+            self.left_panel = tk.Frame(self.main_container, bg="#2d2d2d", width=360)
+            self.left_panel.pack(side="left", fill="y", padx=5, pady=5)
+            self.left_panel.pack_propagate(False)
 
-            content_area = tk.Frame(main_container, bg="#1e1e1e")
+            self.btn_toggle = tk.Button(
+                self.left_panel,
+                text="🏎️ Hide Inputs & Show Track View",
+                command=self.toggle_inputs,
+                bg="#007acc",
+                fg="#ffffff",
+                font=("Arial", 10, "bold")
+            )
+            self.btn_toggle.pack(fill="x", padx=5, pady=(5, 5))
+
+            self.inputs_frame = tk.Frame(self.left_panel, bg="#2d2d2d")
+            self.inputs_frame.pack(fill="both", expand=True, padx=2, pady=2)
+
+            self.track_frame = tk.Frame(self.left_panel, bg="#2d2d2d")
+
+            content_area = tk.Frame(self.main_container, bg="#1e1e1e")
             content_area.pack(side="right", fill="both", expand=True, padx=5, pady=5)
 
         self.entries = {}
@@ -69,7 +106,7 @@ class BatteryApp:
                 ("capacity_ah", "Pack Capacity", "15.0", "Ah"),
                 ("r_int", "Internal Resistance", "0.05", "Ω"),
                 ("bat_mass", "Battery Pack Mass", "35.0", "kg"),
-                ("t_ambient", "Ambient Temperature", "25.0", "°C"),
+                ("t_ambient", "Ambient Temp", "25.0", "°C"),
             ]),
             ("🚘 Vehicle Dynamics", [
                 ("mass", "Vehicle + Driver Mass", "250.0", "kg"),
@@ -82,20 +119,20 @@ class BatteryApp:
 
         for group_title, items in groups:
             if USE_CTK:
-                lbl_group = ctk.CTkLabel(sidebar, text=group_title, font=ctk.CTkFont(size=14, weight="bold"), anchor="w")
-                lbl_group.pack(fill="x", pady=(10, 5), padx=5)
+                lbl_group = ctk.CTkLabel(self.inputs_frame, text=group_title, font=ctk.CTkFont(size=13, weight="bold"), anchor="w")
+                lbl_group.pack(fill="x", pady=(8, 4), padx=4)
             else:
-                lbl_group = tk.Label(sidebar, text=group_title, fg="#ffffff", bg="#2d2d2d", font=("Arial", 11, "bold"), anchor="w")
-                lbl_group.pack(fill="x", pady=(10, 5), padx=5)
+                lbl_group = tk.Label(self.inputs_frame, text=group_title, fg="#ffffff", bg="#2d2d2d", font=("Arial", 10, "bold"), anchor="w")
+                lbl_group.pack(fill="x", pady=(8, 4), padx=4)
 
             for key, label, default, unit in items:
-                row_frame = ctk.CTkFrame(sidebar) if USE_CTK else tk.Frame(sidebar, bg="#2d2d2d")
-                row_frame.pack(fill="x", pady=2, padx=5)
+                row_frame = ctk.CTkFrame(self.inputs_frame) if USE_CTK else tk.Frame(self.inputs_frame, bg="#2d2d2d")
+                row_frame.pack(fill="x", pady=2, padx=4)
 
                 if USE_CTK:
-                    lbl = ctk.CTkLabel(row_frame, text=label, font=ctk.CTkFont(size=11), width=140, anchor="w")
+                    lbl = ctk.CTkLabel(row_frame, text=label, font=ctk.CTkFont(size=11), width=135, anchor="w")
                     lbl.pack(side="left", padx=2)
-                    entry = ctk.CTkEntry(row_frame, width=90)
+                    entry = ctk.CTkEntry(row_frame, width=80)
                     entry.insert(0, default)
                     entry.pack(side="left", padx=2)
                     unit_lbl = ctk.CTkLabel(row_frame, text=unit, font=ctk.CTkFont(size=10), fg_color="transparent")
@@ -111,15 +148,18 @@ class BatteryApp:
 
                 self.entries[key] = entry
 
-        # Run Button
+        # Run Button at bottom of Inputs
         if USE_CTK:
-            btn_run = ctk.CTkButton(sidebar, text="🚀 Run Simulation", command=self.run_sim, font=ctk.CTkFont(size=14, weight="bold"))
-            btn_run.pack(fill="x", pady=15, padx=5)
+            btn_run = ctk.CTkButton(self.inputs_frame, text="🚀 Run Simulation", command=self.run_sim, font=ctk.CTkFont(size=13, weight="bold"))
+            btn_run.pack(fill="x", pady=12, padx=4)
         else:
-            btn_run = tk.Button(sidebar, text="🚀 Run Simulation", command=self.run_sim, bg="#007acc", fg="#ffffff", font=("Arial", 11, "bold"))
-            btn_run.pack(fill="x", pady=15, padx=5)
+            btn_run = tk.Button(self.inputs_frame, text="🚀 Run Simulation", command=self.run_sim, bg="#007acc", fg="#ffffff", font=("Arial", 10, "bold"))
+            btn_run.pack(fill="x", pady=12, padx=4)
 
-        # Summary Cards Container
+        # Build Track View Widgets inside track_frame
+        self._build_track_view_widgets()
+
+        # Right Summary Cards Container
         if USE_CTK:
             self.cards_frame = ctk.CTkFrame(content_area)
             self.cards_frame.pack(fill="x", pady=5)
@@ -142,19 +182,19 @@ class BatteryApp:
                 card.pack(side="left", expand=True, fill="both", padx=4, pady=4)
                 t_lbl = ctk.CTkLabel(card, text=title, font=ctk.CTkFont(size=11), text_color="#aaaaaa")
                 t_lbl.pack(pady=(5, 0))
-                v_lbl = ctk.CTkLabel(card, text=val, font=ctk.CTkFont(size=16, weight="bold"), text_color=color)
+                v_lbl = ctk.CTkLabel(card, text=val, font=ctk.CTkFont(size=15, weight="bold"), text_color=color)
                 v_lbl.pack(pady=(0, 5))
             else:
                 card = tk.Frame(self.cards_frame, bg="#2d2d2d", bd=1, relief="solid")
                 card.pack(side="left", expand=True, fill="both", padx=4, pady=4)
                 t_lbl = tk.Label(card, text=title, fg="#aaaaaa", bg="#2d2d2d", font=("Arial", 9))
                 t_lbl.pack(pady=(5, 0))
-                v_lbl = tk.Label(card, text=val, fg=color, bg="#2d2d2d", font=("Arial", 12, "bold"))
+                v_lbl = tk.Label(card, text=val, fg=color, bg="#2d2d2d", font=("Arial", 11, "bold"))
                 v_lbl.pack(pady=(0, 5))
 
             self.cards[key] = v_lbl
 
-        # Plot Canvas
+        # Main Performance Plots Canvas
         if USE_CTK:
             plot_frame = ctk.CTkFrame(content_area)
             plot_frame.pack(fill="both", expand=True, pady=5)
@@ -167,6 +207,88 @@ class BatteryApp:
         
         self.canvas = FigureCanvasTkAgg(self.fig, master=plot_frame)
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
+
+    def _build_track_view_widgets(self):
+        """Creates the Matplotlib Bird's Eye View track preview inside track_frame"""
+        if USE_CTK:
+            title_lbl = ctk.CTkLabel(self.track_frame, text="🗺️ Bird's Eye View - Track Layout", font=ctk.CTkFont(size=13, weight="bold"))
+            title_lbl.pack(pady=5)
+            self.track_info_lbl = ctk.CTkLabel(self.track_frame, text="Total Lap Distance: -- m", font=ctk.CTkFont(size=11), text_color="#17a2b8")
+            self.track_info_lbl.pack(pady=(0, 5))
+        else:
+            title_lbl = tk.Label(self.track_frame, text="🗺️ Bird's Eye View - Track Layout", fg="#ffffff", bg="#2d2d2d", font=("Arial", 10, "bold"))
+            title_lbl.pack(pady=5)
+            self.track_info_lbl = tk.Label(self.track_frame, text="Total Lap Distance: -- m", fg="#17a2b8", bg="#2d2d2d", font=("Arial", 9))
+            self.track_info_lbl.pack(pady=(0, 5))
+
+        self.fig_track, self.ax_track = plt.subplots(figsize=(4, 5), facecolor="#1e1e1e")
+        self.fig_track.tight_layout(pad=2.0)
+        
+        self.canvas_track = FigureCanvasTkAgg(self.fig_track, master=self.track_frame)
+        self.canvas_track.get_tk_widget().pack(fill="both", expand=True, padx=4, pady=4)
+
+    def toggle_inputs(self):
+        """Toggles between showing Input Parameters and showing Bird's Eye View track map."""
+        if self.inputs_visible:
+            # Hide Inputs, Show Track View
+            self.inputs_frame.pack_forget()
+            self.track_frame.pack(fill="both", expand=True, padx=2, pady=2)
+            if USE_CTK:
+                self.btn_toggle.configure(text="⚙️ Show Inputs", fg_color="#28a745", hover_color="#1e7e34")
+            else:
+                self.btn_toggle.configure(text="⚙️ Show Inputs", bg="#28a745")
+            self.inputs_visible = False
+            self.draw_track_view()
+        else:
+            # Show Inputs, Hide Track View
+            self.track_frame.pack_forget()
+            self.inputs_frame.pack(fill="both", expand=True, padx=2, pady=2)
+            if USE_CTK:
+                self.btn_toggle.configure(text="🏎️ Hide Inputs & Show Track View", fg_color="#1f538d", hover_color="#14375e")
+            else:
+                self.btn_toggle.configure(text="🏎️ Hide Inputs & Show Track View", bg="#007acc")
+            self.inputs_visible = True
+
+    def draw_track_view(self):
+        """Draws the bird's eye view track layout based on current inputs."""
+        try:
+            get_val = lambda k: float(self.entries[k].get())
+            track_config = {
+                'num_straights': int(get_val('num_straights')),
+                'straight_length': get_val('straight_length'),
+                'num_turns': int(get_val('num_turns')),
+                'turn_radius': get_val('turn_radius'),
+                'turn_angle': get_val('turn_angle'),
+                'num_laps': int(get_val('num_laps')),
+            }
+        except ValueError:
+            return
+
+        sim = BatterySimulator(track_config=track_config)
+        x_coords, y_coords, total_len = sim.get_track_coordinates()
+
+        self.track_info_lbl.configure(text=f"Total Lap Distance: {total_len:.1f} m")
+
+        self.ax_track.clear()
+        self.ax_track.set_facecolor("#2b2b2b")
+
+        # Plot track path
+        self.ax_track.plot(x_coords, y_coords, color="#00e676", linewidth=3, label="Track Layout")
+        
+        # Start/Finish line marker at (0,0)
+        self.ax_track.plot(x_coords[0], y_coords[0], marker="o", markersize=8, color="#ff1744", label="Start / Finish")
+        self.ax_track.text(x_coords[0] + 2, y_coords[0] + 2, "Start 🏁", color="#ff1744", fontsize=9, weight="bold")
+
+        self.ax_track.set_title("Track Layout (2D Bird's Eye)", color="#ffffff", fontsize=10)
+        self.ax_track.set_xlabel("X Distance (m)", color="#ffffff", fontsize=8)
+        self.ax_track.set_ylabel("Y Distance (m)", color="#ffffff", fontsize=8)
+        self.ax_track.tick_params(colors="#ffffff", labelsize=8)
+        self.ax_track.grid(True, linestyle=":", alpha=0.4)
+        self.ax_track.set_aspect("equal", adjustable="datalim")
+        self.ax_track.legend(facecolor="#2b2b2b", labelcolor="#ffffff", fontsize=7, loc="upper right")
+
+        self.fig_track.tight_layout()
+        self.canvas_track.draw()
 
     def run_sim(self):
         try:
@@ -211,11 +333,10 @@ class BatteryApp:
         self.cards["time"].configure(text=f"{res['total_time_s']:.1f} s ({res['lap_time_avg_s']:.1f} s/lap)")
         self.cards["peak_i"].configure(text=f"{res['peak_current_a']:.1f} A")
 
-        # Update Plots
+        # Update Main Performance Plots
         self.ax1.clear()
         self.ax2.clear()
 
-        # Style plots for dark theme
         for ax in (self.ax1, self.ax2):
             ax.set_facecolor("#2b2b2b")
             ax.tick_params(colors="#ffffff")
@@ -241,6 +362,10 @@ class BatteryApp:
 
         self.fig.tight_layout()
         self.canvas.draw()
+
+        # Update track view if currently visible
+        if not self.inputs_visible:
+            self.draw_track_view()
 
 
 def main():

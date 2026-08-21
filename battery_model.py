@@ -174,3 +174,67 @@ class BatterySimulator:
             'total_energy_kwh': total_energy_kwh,
             'v_turn_kmh': v_turn * 3.6
         }
+
+    def get_track_coordinates(self):
+        """
+        Generates (x, y) 2D point lists representing the bird's-eye view layout of the track.
+        Returns x_coords, y_coords, total_length_m
+        """
+        x, y = 0.0, 0.0
+        heading = 0.0  # radians (0 = east / +X)
+        
+        x_coords = [x]
+        y_coords = [y]
+
+        turn_angle_rad = math.radians(self.turn_angle)
+        turn_arc_length = self.turn_radius * turn_angle_rad
+        num_segments = max(self.num_straights, self.num_turns)
+        turn_dir = 1.0  # +1 for left turn, -1 for right turn
+
+        total_length = 0.0
+
+        for seg in range(num_segments):
+            # 1. Straight
+            if seg < self.num_straights:
+                num_pts = max(10, int(self.straight_length / 5.0))
+                for i in range(1, num_pts + 1):
+                    t = i / num_pts
+                    px = x + (t * self.straight_length) * math.cos(heading)
+                    py = y + (t * self.straight_length) * math.sin(heading)
+                    x_coords.append(px)
+                    y_coords.append(py)
+                
+                x = x_coords[-1]
+                y = y_coords[-1]
+                total_length += self.straight_length
+
+            # 2. Turn
+            if seg < self.num_turns:
+                # Turn center is perpendicular to current heading
+                center_angle = heading + turn_dir * (math.pi / 2.0)
+                cx = x + self.turn_radius * math.cos(center_angle)
+                cy = y + self.turn_radius * math.sin(center_angle)
+                
+                start_angle = center_angle + math.pi if turn_dir > 0 else center_angle
+                end_angle = start_angle + turn_dir * turn_angle_rad
+                
+                num_pts = max(15, int(self.turn_angle / 3.0))
+                for i in range(1, num_pts + 1):
+                    t = i / num_pts
+                    curr_a = start_angle + t * (end_angle - start_angle)
+                    px = cx + self.turn_radius * math.cos(curr_a)
+                    py = cy + self.turn_radius * math.sin(curr_a)
+                    x_coords.append(px)
+                    y_coords.append(py)
+                
+                x = x_coords[-1]
+                y = y_coords[-1]
+                heading += turn_dir * turn_angle_rad
+                total_length += turn_arc_length
+                
+                # Alternate direction every 2 turns for chicane/autocross feel
+                if (seg + 1) % 2 == 0:
+                    turn_dir *= -1.0
+
+        return x_coords, y_coords, total_length
+
