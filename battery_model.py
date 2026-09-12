@@ -254,4 +254,257 @@ class BatterySimulator:
 
         return x_coords, y_coords, total_length
 
+    @staticmethod
+    def get_track_coordinates_from_segments(segments):
+        """
+        Generates (x, y) 2D point lists from an ordered list of segments.
+        Applies heading normalization and smooth spatial loop closure so that
+        track endpoints align seamlessly into a closed loop without sharp jump lines.
+        Returns x_coords, y_coords, total_length_m
+        """
+        # 1. Determine raw heading change & target loop heading
+        raw_net_heading_rad = 0.0
+        for seg in segments:
+            if seg[0] == "turn":
+                angle_rad = math.radians(seg[2])
+                turn_dir = -1.0 if seg[3] == "right" else 1.0
+                raw_net_heading_rad += turn_dir * angle_rad
+
+        # Target -2*pi for net clockwise, +2*pi for net anti-clockwise
+        target_heading_rad = -2.0 * math.pi if raw_net_heading_rad < 0 else 2.0 * math.pi
+        turn_sum = sum(seg[2] for seg in segments if seg[0] == "turn")
+        heading_diff = target_heading_rad - raw_net_heading_rad
+
+        # 2. Build preliminary path
+        x, y = 0.0, 0.0
+        heading = 0.0
+
+        x_coords = [x]
+        y_coords = [y]
+        distances = [0.0]
+        total_length = 0.0
+
+        for seg in segments:
+            if seg[0] == "straight":
+                length = seg[1]
+                num_pts = max(5, int(length / 8.0))
+                for i in range(1, num_pts + 1):
+                    t = i / num_pts
+                    px = x + (t * length) * math.cos(heading)
+                    py = y + (t * length) * math.sin(heading)
+                    x_coords.append(px)
+                    y_coords.append(py)
+                    total_length += length / num_pts
+                    distances.append(total_length)
+                x, y = x_coords[-1], y_coords[-1]
+            elif seg[0] == "turn":
+                radius = seg[1]
+                raw_angle_deg = seg[2]
+                direction = seg[3]
+
+                # Proportional angle adjustment for perfect 360-degree net rotation
+                scale_adj = (raw_angle_deg / max(1.0, turn_sum)) * math.degrees(abs(heading_diff))
+                sign = 1.0 if (heading_diff > 0 if direction == "left" else heading_diff < 0) else -1.0
+                adj_angle_deg = raw_angle_deg + sign * scale_adj
+
+                angle_rad = math.radians(adj_angle_deg)
+                turn_dir = 1.0 if direction == "left" else -1.0
+
+                center_angle = heading + turn_dir * (math.pi / 2.0)
+                cx = x + radius * math.cos(center_angle)
+                cy = y + radius * math.sin(center_angle)
+
+                start_angle = center_angle + math.pi
+                end_angle = start_angle + turn_dir * angle_rad
+
+                num_pts = max(8, int(raw_angle_deg / 3.0))
+                arc_len = radius * angle_rad
+                for i in range(1, num_pts + 1):
+                    t = i / num_pts
+                    curr_a = start_angle + t * (end_angle - start_angle)
+                    px = cx + radius * math.cos(curr_a)
+                    py = cy + radius * math.sin(curr_a)
+                    x_coords.append(px)
+                    y_coords.append(py)
+                    total_length += arc_len / num_pts
+                    distances.append(total_length)
+
+                x, y = x_coords[-1], y_coords[-1]
+                heading += turn_dir * angle_rad
+
+        # 3. Smooth spatial loop closure drift correction
+        dx = x_coords[-1] - x_coords[0]
+        dy = y_coords[-1] - y_coords[0]
+        S = max(1.0, distances[-1])
+
+        closed_x = []
+        closed_y = []
+        for i in range(len(x_coords)):
+            t = distances[i] / S
+            w = t * t * (3.0 - 2.0 * t)  # Smooth cubic weighting function
+            closed_x.append(x_coords[i] - w * dx)
+            closed_y.append(y_coords[i] - w * dy)
+
+        return closed_x, closed_y, S
+
+    def run_simulation_from_segments(self, segments, dt=0.05):
+        """
+        Simulates a multi-lap run on a track defined by per-segment geometry.
+        Each straight and turn can have its own length, radius, and angle.
+        Returns the same result dict as run_simulation().
+        """
+        time_points = [0.0]
+        soc_points = [100.0]
+        capacity_ah_points = [self.capacity_ah]
+        temp_points = [self.t_ambient]
+        current_points = [0.0]
+        speed_points = [0.0]
+
+        remaining_ah = self.capacity_ah
+        current_temp = self.t_ambient
+        current_time = 0.0
+        peak_current = 0.0
+        total_energy_kwh = 0.0
+        p_max_watts = self.p_max_kw * 1000.0
+
+        for _lap in range(self.num_laps):
+            for seg in segments:
+                if seg[0] == "straight":
+                    straight_length = seg[1]
+                    # Need a target exit speed — use the next turn's cornering limit
+                    # For simplicity, use a generic conservative cornering speed
+                    v_exit = self._find_next_turn_speed(segments, seg)
+
+                    dist_in_straight = 0.0
+                    v_current = max(v_exit, 5.0)  # entry speed from previous turn
+
+                    a_brake = self.mu * self.g
+
+                    while dist_in_straight < straight_length:
+                        remaining_dist = straight_length - dist_in_straight
+                        a_brake_needed = (v_current**2 - v_exit**2) / (2 * max(0.001, remaining_dist))
+                        is_braking = (a_brake_needed >= a_brake * 0.9) and (v_current > v_exit)
+
+                        f_drag = 0.5 * self.air_density * self.cd_a * (v_current ** 2)
+                        f_rr = self.mass * self.g * self.c_rr
+
+                        if is_braking:
+                            a_net = -a_brake
+                            f_braking = self.mass * a_brake
+                            p_regen_mech = f_braking * v_current
+                            p_elec = -p_regen_mech * self.regen_efficiency
+                            i_bat = p_elec / self.v_pack
+                        else:
+                            f_tractive_limit = self.mu * self.mass * self.g
+                            f_power_limit = (p_max_watts * self.eta_drivetrain) / max(0.1, v_current)
+                            f_tractive = min(f_tractive_limit, f_power_limit)
+
+                            f_net = f_tractive - f_drag - f_rr
+                            a_net = f_net / self.mass
+                            p_mech = f_tractive * v_current
+                            p_elec = p_mech / self.eta_drivetrain
+                            i_bat = p_elec / self.v_pack
+
+                        if i_bat > peak_current:
+                            peak_current = i_bat
+
+                        v_next = max(1.0, v_current + a_net * dt)
+
+                        ah_used = (i_bat * dt) / 3600.0
+                        remaining_ah = max(0.0, remaining_ah - ah_used)
+                        if p_elec > 0:
+                            total_energy_kwh += (p_elec * dt) / (3600.0 * 1000.0)
+
+                        q_gen = (i_bat ** 2) * self.r_int
+                        q_cool = self.h_cooling * self.cooling_area * (current_temp - self.t_ambient)
+                        d_temp = ((q_gen - q_cool) * dt) / (self.bat_mass * self.c_p)
+                        current_temp += d_temp
+
+                        dist_in_straight += ((v_current + v_next) / 2.0) * dt
+                        v_current = v_next
+                        current_time += dt
+
+                        time_points.append(current_time)
+                        soc_points.append((remaining_ah / self.capacity_ah) * 100.0)
+                        capacity_ah_points.append(remaining_ah)
+                        temp_points.append(current_temp)
+                        current_points.append(i_bat)
+                        speed_points.append(v_current * 3.6)
+
+                elif seg[0] == "turn":
+                    turn_radius = seg[1]
+                    turn_angle_deg = seg[2]
+                    # direction not needed for physics, just geometry
+
+                    v_turn = math.sqrt(self.mu * self.g * turn_radius)
+                    turn_arc_length = turn_radius * math.radians(turn_angle_deg)
+
+                    dist_in_turn = 0.0
+                    v_current = v_turn
+
+                    while dist_in_turn < turn_arc_length:
+                        f_drag = 0.5 * self.air_density * self.cd_a * (v_current ** 2)
+                        f_rr = self.mass * self.g * self.c_rr
+                        f_res = f_drag + f_rr
+
+                        p_mech = f_res * v_current
+                        p_elec = p_mech / self.eta_drivetrain
+
+                        i_bat = p_elec / self.v_pack if self.v_pack > 0 else 0.0
+                        if i_bat > peak_current:
+                            peak_current = i_bat
+
+                        ah_used = (i_bat * dt) / 3600.0
+                        remaining_ah = max(0.0, remaining_ah - ah_used)
+                        total_energy_kwh += (p_elec * dt) / (3600.0 * 1000.0)
+
+                        q_gen = (i_bat ** 2) * self.r_int
+                        q_cool = self.h_cooling * self.cooling_area * (current_temp - self.t_ambient)
+                        d_temp = ((q_gen - q_cool) * dt) / (self.bat_mass * self.c_p)
+                        current_temp += d_temp
+
+                        dist_in_turn += v_current * dt
+                        current_time += dt
+
+                        time_points.append(current_time)
+                        soc_points.append((remaining_ah / self.capacity_ah) * 100.0)
+                        capacity_ah_points.append(remaining_ah)
+                        temp_points.append(current_temp)
+                        current_points.append(i_bat)
+                        speed_points.append(v_current * 3.6)
+
+        return {
+            'time': time_points,
+            'soc': soc_points,
+            'capacity_ah': capacity_ah_points,
+            'temp': temp_points,
+            'current': current_points,
+            'speed': speed_points,
+            'total_time_s': current_time,
+            'lap_time_avg_s': current_time / max(1, self.num_laps),
+            'final_soc_pct': soc_points[-1],
+            'final_capacity_ah': remaining_ah,
+            'final_temp_c': current_temp,
+            'peak_current_a': peak_current,
+            'total_energy_kwh': total_energy_kwh,
+            'v_turn_kmh': 0.0,
+        }
+
+    def _find_next_turn_speed(self, segments, current_seg):
+        """Find the cornering speed of the next turn segment after the current one."""
+        found_current = False
+        for seg in segments:
+            if seg is current_seg:
+                found_current = True
+                continue
+            if found_current and seg[0] == "turn":
+                turn_radius = seg[1]
+                return math.sqrt(self.mu * self.g * turn_radius)
+        # If no next turn found, wrap around to first turn
+        for seg in segments:
+            if seg[0] == "turn":
+                turn_radius = seg[1]
+                return math.sqrt(self.mu * self.g * turn_radius)
+        return 10.0  # fallback
+
 

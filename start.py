@@ -1,11 +1,13 @@
 import sys
 import math
+import numpy as np
 import tkinter as tk
 from tkinter import messagebox
 import matplotlib
 matplotlib.use("TkAgg")
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
+from matplotlib.collections import LineCollection
 
 try:
     import customtkinter as ctk
@@ -16,9 +18,13 @@ except ImportError:
     USE_CTK = False
 
 from battery_model import BatterySimulator
+from f1_tracks import F1_TRACKS, get_track_keys, get_track_display_name, get_track_info_text
 
 
 class BatteryApp:
+    # Track mode constants
+    MODE_CUSTOM = "custom"
+
     def __init__(self, root):
         self.root = root
         self.root.title("Formula SAE - Battery Capacity & Thermal Model")
@@ -28,6 +34,8 @@ class BatteryApp:
             self.root.configure(bg="#1e1e1e")
 
         self.inputs_visible = True
+        self.track_mode = self.MODE_CUSTOM  # "custom" or an F1 track key
+        self._saved_custom_values = {}  # store custom field values when switching to preset
         self._build_ui()
         self.run_sim()
 
@@ -42,10 +50,10 @@ class BatteryApp:
             self.left_panel.pack(side="left", fill="y", padx=5, pady=5)
             self.left_panel.pack_propagate(False)
 
-            # Input Parameters Header Button (Clickable header button to show/hide inputs)
+            # Header Button (Toggles between Input Parameters and Performance Graphs)
             self.btn_toggle = ctk.CTkButton(
                 self.left_panel,
-                text="⚙️ Input Parameters  ▲ (Click to Hide)",
+                text="⚙️ Input Parameters  ▲ (Click for Graphs)",
                 command=self.toggle_inputs,
                 font=ctk.CTkFont(size=13, weight="bold"),
                 fg_color="#1f538d",
@@ -54,14 +62,14 @@ class BatteryApp:
             )
             self.btn_toggle.pack(fill="x", padx=5, pady=(5, 5))
 
-            # Sub-frame 1: Inputs Scrollable Frame
+            # Sub-frame 1: Inputs Scrollable Frame (visible by default)
             self.inputs_frame = ctk.CTkScrollableFrame(self.left_panel)
             self.inputs_frame.pack(fill="both", expand=True, padx=2, pady=2)
 
-            # Sub-frame 2: Bird's Eye View Track Frame (hidden initially)
-            self.track_frame = ctk.CTkFrame(self.left_panel)
+            # Sub-frame 2: Performance Graphs Frame (hidden initially, shown on toggle)
+            self.graphs_frame = ctk.CTkFrame(self.left_panel)
 
-            # Right Content Area (Dashboard & Performance Plots)
+            # Right Content Area (Summary Cards & Main Track View Canvas)
             content_area = ctk.CTkFrame(self.main_container)
             content_area.pack(side="right", fill="both", expand=True, padx=5, pady=5)
         else:
@@ -74,7 +82,7 @@ class BatteryApp:
 
             self.btn_toggle = tk.Button(
                 self.left_panel,
-                text="⚙️ Input Parameters  ▲ (Click to Hide)",
+                text="⚙️ Input Parameters  ▲ (Click for Graphs)",
                 command=self.toggle_inputs,
                 bg="#007acc",
                 fg="#ffffff",
@@ -86,10 +94,52 @@ class BatteryApp:
             self.inputs_frame = tk.Frame(self.left_panel, bg="#2d2d2d")
             self.inputs_frame.pack(fill="both", expand=True, padx=2, pady=2)
 
-            self.track_frame = tk.Frame(self.left_panel, bg="#2d2d2d")
+            self.graphs_frame = tk.Frame(self.left_panel, bg="#2d2d2d")
 
             content_area = tk.Frame(self.main_container, bg="#1e1e1e")
             content_area.pack(side="right", fill="both", expand=True, padx=5, pady=5)
+
+        # --- Track Selector Dropdown at top of Inputs Frame ---
+        dropdown_values = ["🔧 Custom Track"]
+        self._dropdown_key_map = {"🔧 Custom Track": self.MODE_CUSTOM}
+        for key in get_track_keys():
+            display = get_track_display_name(key)
+            dropdown_values.append(display)
+            self._dropdown_key_map[display] = key
+
+        if USE_CTK:
+            lbl_select = ctk.CTkLabel(self.inputs_frame, text="🏁 Select Circuit / Mode", font=ctk.CTkFont(size=13, weight="bold"), anchor="w")
+            lbl_select.pack(fill="x", pady=(4, 2), padx=4)
+            self.track_mode_var = ctk.StringVar(value=dropdown_values[0])
+            self.track_dropdown = ctk.CTkComboBox(
+                self.inputs_frame,
+                values=dropdown_values,
+                variable=self.track_mode_var,
+                command=self._on_track_mode_changed,
+                font=ctk.CTkFont(size=11, weight="bold"),
+                dropdown_font=ctk.CTkFont(size=11),
+                height=32,
+                state="readonly",
+                fg_color="#1a1a2e",
+                border_color="#16213e",
+                button_color="#0f3460",
+                button_hover_color="#1a508b",
+                dropdown_fg_color="#16213e",
+                dropdown_hover_color="#1a508b",
+            )
+            self.track_dropdown.pack(fill="x", pady=(0, 8), padx=4)
+        else:
+            lbl_select = tk.Label(self.inputs_frame, text="🏁 Select Circuit / Mode", fg="#ffffff", bg="#2d2d2d", font=("Arial", 10, "bold"), anchor="w")
+            lbl_select.pack(fill="x", pady=(4, 2), padx=4)
+            self.track_mode_var = tk.StringVar(value=dropdown_values[0])
+            self.track_dropdown = tk.OptionMenu(
+                self.inputs_frame,
+                self.track_mode_var,
+                *dropdown_values,
+                command=self._on_track_mode_changed,
+            )
+            self.track_dropdown.configure(bg="#1a1a2e", fg="#ffffff", font=("Arial", 9, "bold"))
+            self.track_dropdown.pack(fill="x", pady=(0, 8), padx=4)
 
         self.entries = {}
 
@@ -118,6 +168,9 @@ class BatteryApp:
                 ("c_rr", "Rolling Resistance", "0.015", "coef"),
             ]),
         ]
+
+        # Track geometry keys — these get locked when a preset is selected
+        self._track_geometry_keys = ["num_straights", "straight_length", "num_turns", "turn_radius", "turn_angle"]
 
         for group_title, items in groups:
             if USE_CTK:
@@ -158,10 +211,16 @@ class BatteryApp:
             btn_run = tk.Button(self.inputs_frame, text="🚀 Run Simulation", command=self.run_sim, bg="#007acc", fg="#ffffff", font=("Arial", 10, "bold"))
             btn_run.pack(fill="x", pady=12, padx=4)
 
-        # Build Track View Widgets inside track_frame
-        self._build_track_view_widgets()
+        # Build Performance Plots inside graphs_frame (stacked vertically for Left Panel)
+        self.fig = Figure(figsize=(3.8, 6.5), facecolor="#1e1e1e")
+        self.ax1 = self.fig.add_subplot(211)
+        self.ax2 = self.fig.add_subplot(212)
+        self.fig.tight_layout(pad=2.5)
 
-        # Right Summary Cards Container
+        self.canvas = FigureCanvasTkAgg(self.fig, master=self.graphs_frame)
+        self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=2, pady=2)
+
+        # --- Right Area: Summary Cards ---
         if USE_CTK:
             self.cards_frame = ctk.CTkFrame(content_area)
             self.cards_frame.pack(fill="x", pady=5)
@@ -196,120 +255,330 @@ class BatteryApp:
 
             self.cards[key] = v_lbl
 
-        # Main Performance Plots Canvas (using Figure directly to prevent memory leaks)
+        # --- Right Area: Main Bird's Eye View Track Frame (always visible) ---
         if USE_CTK:
-            plot_frame = ctk.CTkFrame(content_area)
-            plot_frame.pack(fill="both", expand=True, pady=5)
+            self.track_frame = ctk.CTkFrame(content_area)
+            self.track_frame.pack(fill="both", expand=True, pady=5)
         else:
-            plot_frame = tk.Frame(content_area, bg="#1e1e1e")
-            plot_frame.pack(fill="both", expand=True, pady=5)
+            self.track_frame = tk.Frame(content_area, bg="#1e1e1e")
+            self.track_frame.pack(fill="both", expand=True, pady=5)
 
-        self.fig = Figure(figsize=(9, 4), facecolor="#1e1e1e")
-        self.ax1 = self.fig.add_subplot(121)
-        self.ax2 = self.fig.add_subplot(122)
-        self.fig.tight_layout(pad=3.0)
-        
-        self.canvas = FigureCanvasTkAgg(self.fig, master=plot_frame)
-        self.canvas.get_tk_widget().pack(fill="both", expand=True)
+        self._build_track_view_widgets()
 
     def _build_track_view_widgets(self):
-        """Creates the Matplotlib Bird's Eye View track preview inside track_frame"""
-        if USE_CTK:
-            title_lbl = ctk.CTkLabel(self.track_frame, text="🗺️ Bird's Eye View - Track Layout", font=ctk.CTkFont(size=13, weight="bold"))
-            title_lbl.pack(pady=5)
-            self.track_info_lbl = ctk.CTkLabel(self.track_frame, text="Total Lap Distance: -- m", font=ctk.CTkFont(size=11), text_color="#17a2b8")
-            self.track_info_lbl.pack(pady=(0, 5))
-        else:
-            title_lbl = tk.Label(self.track_frame, text="🗺️ Bird's Eye View - Track Layout", fg="#ffffff", bg="#2d2d2d", font=("Arial", 10, "bold"))
-            title_lbl.pack(pady=5)
-            self.track_info_lbl = tk.Label(self.track_frame, text="Total Lap Distance: -- m", fg="#17a2b8", bg="#2d2d2d", font=("Arial", 9))
-            self.track_info_lbl.pack(pady=(0, 5))
+        """Creates the info header banner and main Matplotlib Bird's Eye View canvas inside track_frame."""
 
-        self.fig_track = Figure(figsize=(4, 5), facecolor="#1e1e1e")
+        # --- Track Info Banner Header ---
+        if USE_CTK:
+            self.track_info_lbl = ctk.CTkLabel(
+                self.track_frame,
+                text="Total Lap Distance: -- m",
+                font=ctk.CTkFont(size=12, weight="bold"),
+                text_color="#17a2b8",
+                justify="left",
+                anchor="w",
+            )
+            self.track_info_lbl.pack(fill="x", pady=(6, 4), padx=12)
+        else:
+            self.track_info_lbl = tk.Label(
+                self.track_frame,
+                text="Total Lap Distance: -- m",
+                fg="#17a2b8",
+                bg="#2d2d2d",
+                font=("Arial", 10, "bold"),
+                justify="left",
+                anchor="w",
+            )
+            self.track_info_lbl.pack(fill="x", pady=(6, 4), padx=12)
+
+        # --- Main Track View Matplotlib Canvas ---
+        self.fig_track = Figure(figsize=(8, 6), facecolor="#181818")
         self.ax_track = self.fig_track.add_subplot(111)
-        self.fig_track.tight_layout(pad=2.0)
-        
+        self.fig_track.tight_layout(pad=1.0)
+
         self.canvas_track = FigureCanvasTkAgg(self.fig_track, master=self.track_frame)
         self.canvas_track.get_tk_widget().pack(fill="both", expand=True, padx=4, pady=4)
 
-    def toggle_inputs(self):
-        """Toggles between showing Input Parameters and showing Bird's Eye View track map."""
-        if self.inputs_visible:
-            # Hide Inputs, Show Track View
-            self.inputs_frame.pack_forget()
-            self.track_frame.pack(fill="both", expand=True, padx=2, pady=2)
-            if USE_CTK:
-                self.btn_toggle.configure(text="⚙️ Input Parameters  ▼ (Click to Show)", fg_color="#28a745", hover_color="#1e7e34")
-            else:
-                self.btn_toggle.configure(text="⚙️ Input Parameters  ▼ (Click to Show)", bg="#28a745")
-            self.inputs_visible = False
-            self.draw_track_view()
+    def _on_track_mode_changed(self, selected_value):
+        """Called when the track dropdown selection changes."""
+        new_mode = self._dropdown_key_map.get(selected_value, self.MODE_CUSTOM)
+
+        if new_mode == self.track_mode:
+            return
+
+        if new_mode != self.MODE_CUSTOM and self.track_mode == self.MODE_CUSTOM:
+            # Switching FROM custom TO preset — save current custom values
+            self._saved_custom_values = {}
+            for key in self._track_geometry_keys:
+                self._saved_custom_values[key] = self.entries[key].get()
+
+        self.track_mode = new_mode
+
+        if new_mode == self.MODE_CUSTOM:
+            # Restore custom values and re-enable fields
+            self._set_track_fields_editable(True)
+            if self._saved_custom_values:
+                for key in self._track_geometry_keys:
+                    entry = self.entries[key]
+                    if USE_CTK:
+                        entry.delete(0, "end")
+                        entry.insert(0, self._saved_custom_values.get(key, ""))
+                    else:
+                        entry.delete(0, tk.END)
+                        entry.insert(0, self._saved_custom_values.get(key, ""))
         else:
-            # Show Inputs, Hide Track View
-            self.track_frame.pack_forget()
+            # Fill in representative values from the F1 track and lock fields
+            track_data = F1_TRACKS[new_mode]
+            segments = track_data["segments"]
+            num_straights = sum(1 for s in segments if s[0] == "straight")
+            num_turns = sum(1 for s in segments if s[0] == "turn")
+            straight_lengths = [s[1] for s in segments if s[0] == "straight"]
+            turn_radii = [s[1] for s in segments if s[0] == "turn"]
+            turn_angles = [s[2] for s in segments if s[0] == "turn"]
+
+            avg_straight = sum(straight_lengths) / max(1, len(straight_lengths))
+            avg_radius = sum(turn_radii) / max(1, len(turn_radii))
+            avg_angle = sum(turn_angles) / max(1, len(turn_angles))
+
+            preset_values = {
+                "num_straights": str(num_straights),
+                "straight_length": f"{avg_straight:.1f}",
+                "num_turns": str(num_turns),
+                "turn_radius": f"{avg_radius:.1f}",
+                "turn_angle": f"{avg_angle:.1f}",
+            }
+
+            for key in self._track_geometry_keys:
+                entry = self.entries[key]
+                if USE_CTK:
+                    entry.configure(state="normal")
+                    entry.delete(0, "end")
+                    entry.insert(0, preset_values.get(key, ""))
+                    entry.configure(state="disabled")
+                else:
+                    entry.configure(state="normal")
+                    entry.delete(0, tk.END)
+                    entry.insert(0, preset_values.get(key, ""))
+                    entry.configure(state="disabled", disabledforeground="#666666")
+
+        # Re-run sim & update track view
+        self.run_sim()
+
+    def _set_track_fields_editable(self, editable):
+        """Enable or disable the track geometry input fields."""
+        for key in self._track_geometry_keys:
+            entry = self.entries[key]
+            if USE_CTK:
+                entry.configure(state="normal" if editable else "disabled")
+            else:
+                entry.configure(state="normal" if editable else "disabled")
+
+    def toggle_inputs(self):
+        """Toggles between showing Input Parameters and Performance Graphs in the Left Panel."""
+        if self.inputs_visible:
+            # Hide Inputs, Show Performance Graphs in Left Panel
+            self.inputs_frame.pack_forget()
+            self.graphs_frame.pack(fill="both", expand=True, padx=2, pady=2)
+            if USE_CTK:
+                self.btn_toggle.configure(text="📈 Performance Graphs  ▲ (Click for Inputs)", fg_color="#28a745", hover_color="#1e7e34")
+            else:
+                self.btn_toggle.configure(text="📈 Performance Graphs  ▲ (Click for Inputs)", bg="#28a745")
+            self.inputs_visible = False
+        else:
+            # Show Inputs, Hide Performance Graphs in Left Panel
+            self.graphs_frame.pack_forget()
             self.inputs_frame.pack(fill="both", expand=True, padx=2, pady=2)
             if USE_CTK:
-                self.btn_toggle.configure(text="⚙️ Input Parameters  ▲ (Click to Hide)", fg_color="#1f538d", hover_color="#14375e")
+                self.btn_toggle.configure(text="⚙️ Input Parameters  ▲ (Click for Graphs)", fg_color="#1f538d", hover_color="#14375e")
             else:
-                self.btn_toggle.configure(text="⚙️ Input Parameters  ▲ (Click to Hide)", bg="#007acc")
+                self.btn_toggle.configure(text="⚙️ Input Parameters  ▲ (Click for Graphs)", bg="#007acc")
             self.inputs_visible = True
 
+    def _get_current_track_coords(self):
+        """Returns (x_coords, y_coords, total_len, track_label, info_text, segments_or_none)."""
+        if self.track_mode != self.MODE_CUSTOM:
+            # F1 preset track
+            track_data = F1_TRACKS[self.track_mode]
+            segments = track_data["segments"]
+            x_coords, y_coords, total_len = BatterySimulator.get_track_coordinates_from_segments(segments)
+            track_label = f"{track_data['flag']} {track_data['name']}"
+            info_text = get_track_info_text(self.track_mode)
+            return x_coords, y_coords, total_len, track_label, info_text, segments
+        else:
+            # Custom track — use the old parameter-based approach
+            try:
+                get_val = lambda k: float(self.entries[k].get())
+                track_config = {
+                    'num_straights': int(get_val('num_straights')),
+                    'straight_length': get_val('straight_length'),
+                    'num_turns': int(get_val('num_turns')),
+                    'turn_radius': get_val('turn_radius'),
+                    'turn_angle': get_val('turn_angle'),
+                    'num_laps': int(get_val('num_laps')),
+                }
+            except (ValueError, tk.TclError):
+                return None, None, 0, "", "", None
+
+            sim = BatterySimulator(track_config=track_config)
+            x_coords, y_coords, total_len = sim.get_track_coordinates()
+            info_text = f"Custom Track\nLength: {total_len:,.0f} m   |   Turns: {track_config['num_turns']}"
+            return x_coords, y_coords, total_len, "Custom Track", info_text, None
+
     def draw_track_view(self):
-        """Draws the bird's eye view track layout based on current inputs."""
-        try:
-            get_val = lambda k: float(self.entries[k].get())
-            track_config = {
-                'num_straights': int(get_val('num_straights')),
-                'straight_length': get_val('straight_length'),
-                'num_turns': int(get_val('num_turns')),
-                'turn_radius': get_val('turn_radius'),
-                'turn_angle': get_val('turn_angle'),
-                'num_laps': int(get_val('num_laps')),
-            }
-        except ValueError:
+        """Draws the bird's eye view track layout with realistic road-style rendering."""
+        x_coords, y_coords, total_len, track_label, info_text, segments = self._get_current_track_coords()
+
+        if x_coords is None or not x_coords:
             return
 
-        sim = BatterySimulator(track_config=track_config)
-        x_coords, y_coords, total_len = sim.get_track_coordinates()
-
-        if not x_coords:
-            return
-
-        self.track_info_lbl.configure(text=f"Total Lap Distance: {total_len:.1f} m")
+        self.track_info_lbl.configure(text=info_text)
 
         self.ax_track.clear()
-        self.ax_track.set_facecolor("#2b2b2b")
+        self.ax_track.set_facecolor("#181818")
 
-        # Plot track path
-        self.ax_track.plot(x_coords, y_coords, color="#00e676", linewidth=3, label="Track Layout")
-        
-        # Start/Finish line marker at (0,0)
-        self.ax_track.plot(x_coords[0], y_coords[0], marker="o", markersize=8, color="#ff1744", label="Start / Finish")
-        self.ax_track.text(x_coords[0] + 2, y_coords[0] + 2, "Start 🏁", color="#ff1744", fontsize=9, weight="bold")
+        # Convert to numpy for efficient processing
+        xs = np.array(x_coords)
+        ys = np.array(y_coords)
 
-        self.ax_track.set_title("Track Layout (2D Bird's Eye)", color="#ffffff", fontsize=10)
-        self.ax_track.set_xlabel("X Distance (m)", color="#ffffff", fontsize=8)
-        self.ax_track.set_ylabel("Y Distance (m)", color="#ffffff", fontsize=8)
-        self.ax_track.tick_params(colors="#ffffff", labelsize=8)
-        self.ax_track.grid(True, linestyle=":", alpha=0.4)
+        # --- Compute track normals for edge lines & curb markers ---
+        # Tangent vectors (forward differences, wrapped)
+        dx = np.diff(xs, append=xs[0])
+        dy = np.diff(ys, append=ys[0])
+        lengths = np.sqrt(dx**2 + dy**2)
+        lengths[lengths < 1e-9] = 1e-9
+        tx = dx / lengths
+        ty = dy / lengths
+
+        # Normal vectors (perpendicular to tangent, pointing left)
+        nx = -ty
+        ny = tx
+
+        # --- Determine scale-adaptive line widths ---
+        x_range = xs.max() - xs.min()
+        y_range = ys.max() - ys.min()
+        track_extent = max(x_range, y_range, 1.0)
+        # Scale the road width relative to the track extent
+        road_half_width = track_extent * 0.012
+        edge_offset = road_half_width * 1.05
+
+        # Build edge line coordinates
+        left_xs = xs + nx * edge_offset
+        left_ys = ys + ny * edge_offset
+        right_xs = xs - nx * edge_offset
+        right_ys = ys - ny * edge_offset
+
+        # --- Draw track layers (bottom to top) ---
+
+        # 1. Track surface shadow/glow (subtle outer glow)
+        self.ax_track.plot(xs, ys, color="#0a0a0a", linewidth=road_half_width * 0.65, solid_capstyle="round", zorder=1)
+
+        # 2. Main asphalt ribbon
+        self.ax_track.plot(xs, ys, color="#3a3a3a", linewidth=road_half_width * 0.5, solid_capstyle="round", zorder=2)
+
+        # 3. White edge lines
+        self.ax_track.plot(left_xs, left_ys, color="#ffffff", linewidth=0.6, alpha=0.7, zorder=3)
+        self.ax_track.plot(right_xs, right_ys, color="#ffffff", linewidth=0.6, alpha=0.7, zorder=3)
+
+        # 4. Racing line (center, subtle)
+        self.ax_track.plot(xs, ys, color="#00e676", linewidth=0.5, alpha=0.25, linestyle="--", zorder=4)
+
+        # 5. Curb markers at turn entries (red-white on inside of turns)
+        if segments is not None:
+            self._draw_curb_markers(xs, ys, nx, ny, segments, road_half_width, zorder=5)
+
+        # 6. Start/Finish line
+        self._draw_start_finish(xs, ys, nx, ny, road_half_width, zorder=6)
+
+        # 7. Track name label
+        self.ax_track.text(
+            0.03, 0.97, track_label,
+            transform=self.ax_track.transAxes,
+            color="#ffffff",
+            fontsize=9,
+            fontweight="bold",
+            verticalalignment="top",
+            alpha=0.75,
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="#000000", alpha=0.4, edgecolor="none"),
+            zorder=10,
+        )
+
+        # --- Remove all graph elements ---
         self.ax_track.set_aspect("equal", adjustable="box")
-        self.ax_track.legend(facecolor="#2b2b2b", labelcolor="#ffffff", fontsize=7, loc="upper right")
+        self.ax_track.axis("off")
 
-        self.fig_track.tight_layout()
+        # Add a small margin
+        margin = track_extent * 0.08
+        self.ax_track.set_xlim(xs.min() - margin, xs.max() + margin)
+        self.ax_track.set_ylim(ys.min() - margin, ys.max() + margin)
+
+        self.fig_track.tight_layout(pad=0.5)
         self.canvas_track.draw()
+
+    def _draw_start_finish(self, xs, ys, nx, ny, road_half_width, zorder=6):
+        """Draws a bold red start/finish line perpendicular to the track at the first point."""
+        sf_x = xs[0]
+        sf_y = ys[0]
+        sf_nx = nx[0]
+        sf_ny = ny[0]
+
+        # Perpendicular line endpoints
+        offset = road_half_width * 1.3
+        x1 = sf_x + sf_nx * offset
+        y1 = sf_y + sf_ny * offset
+        x2 = sf_x - sf_nx * offset
+        y2 = sf_y - sf_ny * offset
+
+        self.ax_track.plot([x1, x2], [y1, y2], color="#ff1744", linewidth=2.5, zorder=zorder, solid_capstyle="butt")
+
+        # Checkered flag emoji label
+        self.ax_track.annotate(
+            "🏁",
+            xy=(sf_x, sf_y),
+            xytext=(sf_x + sf_nx * offset * 2.5, sf_y + sf_ny * offset * 2.5),
+            fontsize=12,
+            ha="center", va="center",
+            color="#ffffff",
+            zorder=zorder + 1,
+        )
+
+    def _draw_curb_markers(self, xs, ys, nx, ny, segments, road_half_width, zorder=5):
+        """Draws red-white curb markings at turn locations along the inside of the curve."""
+        # Identify which coordinate indices correspond to turn segments
+        idx = 0
+        n_total = len(xs)
+
+        for seg in segments:
+            if seg[0] == "straight":
+                num_pts = max(5, int(seg[1] / 8.0))
+                idx += num_pts
+            elif seg[0] == "turn":
+                angle_deg = seg[2]
+                direction = seg[3]
+                num_pts = max(8, int(angle_deg / 3.0))
+
+                # Draw curbs every few points on the inside
+                inside_sign = 1.0 if direction == "right" else -1.0
+                curb_offset = road_half_width * 0.95
+
+                for i in range(0, num_pts, 3):
+                    ci = (idx + i) % n_total
+                    ci_next = (idx + i + 1) % n_total
+
+                    cx1 = xs[ci] - inside_sign * nx[ci] * curb_offset
+                    cy1 = ys[ci] - inside_sign * ny[ci] * curb_offset
+                    cx2 = xs[ci_next] - inside_sign * nx[ci_next] * curb_offset
+                    cy2 = ys[ci_next] - inside_sign * ny[ci_next] * curb_offset
+
+                    color = "#ff1744" if (i // 3) % 2 == 0 else "#ffffff"
+                    self.ax_track.plot([cx1, cx2], [cy1, cy2], color=color, linewidth=2.0, solid_capstyle="butt", zorder=zorder)
+
+                idx += num_pts
 
     def run_sim(self):
         try:
             get_val = lambda k: float(self.entries[k].get())
             
-            track_config = {
-                'num_straights': int(get_val('num_straights')),
-                'straight_length': get_val('straight_length'),
-                'num_turns': int(get_val('num_turns')),
-                'turn_radius': get_val('turn_radius'),
-                'turn_angle': get_val('turn_angle'),
-                'num_laps': int(get_val('num_laps')),
-            }
+            # Battery & vehicle configs are always from entries
             battery_config = {
                 'v_pack': get_val('v_pack'),
                 'capacity_ah': get_val('capacity_ah'),
@@ -324,12 +593,40 @@ class BatteryApp:
                 'cd_a': get_val('cd_a'),
                 'c_rr': get_val('c_rr'),
             }
-        except ValueError:
+
+            num_laps = int(get_val('num_laps'))
+
+            if self.track_mode != self.MODE_CUSTOM:
+                # F1 preset — use segment-aware simulation
+                track_data = F1_TRACKS[self.track_mode]
+                segments = track_data["segments"]
+                # For segment sim, we still need a track_config for num_laps
+                track_config = {
+                    'num_straights': 1,
+                    'straight_length': 1,
+                    'num_turns': 1,
+                    'turn_radius': 1,
+                    'turn_angle': 1,
+                    'num_laps': num_laps,
+                }
+                sim = BatterySimulator(track_config, vehicle_config, battery_config)
+                res = sim.run_simulation_from_segments(segments)
+            else:
+                # Custom track — use the original simulation
+                track_config = {
+                    'num_straights': int(get_val('num_straights')),
+                    'straight_length': get_val('straight_length'),
+                    'num_turns': int(get_val('num_turns')),
+                    'turn_radius': get_val('turn_radius'),
+                    'turn_angle': get_val('turn_angle'),
+                    'num_laps': num_laps,
+                }
+                sim = BatterySimulator(track_config, vehicle_config, battery_config)
+                res = sim.run_simulation()
+
+        except (ValueError, tk.TclError):
             messagebox.showerror("Input Error", "Please enter valid numeric values for all parameters.")
             return
-
-        sim = BatterySimulator(track_config, vehicle_config, battery_config)
-        res = sim.run_simulation()
 
         # Update Summary Cards safely across both CustomTkinter and standard Tkinter
         self.cards["soc"].configure(text=f"{res['final_soc_pct']:.1f}% ({res['final_capacity_ah']:.2f} Ah)")
@@ -374,9 +671,8 @@ class BatteryApp:
         self.fig.tight_layout()
         self.canvas.draw()
 
-        # Update track view if currently visible
-        if not self.inputs_visible:
-            self.draw_track_view()
+        # Always update track view (now permanently visible in main right area)
+        self.draw_track_view()
 
 
 def main():
