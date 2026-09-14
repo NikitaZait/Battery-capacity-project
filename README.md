@@ -7,4 +7,4 @@ Plan is to upgrade this program to make it a bit more specific for the Formula S
 Future ideas: Peak Power Output, Maximum System Voltage, Thermal Cutoff Threshold, Low-Speed Regen Cutoff
 Maybe graph theory will be added later on
 
-Main part is to finish the project before presenting it to the club members.
+
