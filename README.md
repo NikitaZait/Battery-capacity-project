@@ -1,5 +1,9 @@
 # Battery capacity project
 
+https://github.com/user-attachments/assets/a4fb1fe4-430c-46f1-b11c-89338739c579
+
+
+
 This is start of something new for me. Battery capacity project will consist of a certain inputs and outputs. 
 Main inputs will be: time, voltage, number of straights, length of each straight, number of turns, radius and angle of each turn. 
 Main outputs will be: battery capacity left, temperature.
