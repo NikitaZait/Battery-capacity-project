@@ -1,4 +1,5 @@
 import math
+import numpy as np
 
 class BatterySimulator:
     def __init__(self, track_config=None, vehicle_config=None, battery_config=None):
@@ -53,19 +54,34 @@ class BatterySimulator:
         temp_points = [self.t_ambient]
         current_points = [0.0]
         speed_points = [v_turn * 3.6]
+        dist_points = [0.0]
 
         remaining_ah = self.capacity_ah
         current_temp = self.t_ambient
         current_time = 0.0
         peak_current = 0.0
         total_energy_kwh = 0.0
+        total_dist_m = 0.0
+
+        bms_activated = False
+        bms_reason = ""
+        bms_reason_type = "none"
+        stopped_lap = self.num_laps
+        min_cell_v_seen = 4.2
+        n_cells_series = max(1.0, self.v_pack / 3.6)
+        r_cell = self.r_int / n_cells_series
 
         p_max_watts = self.p_max_kw * 1000.0
 
         for lap in range(self.num_laps):
+            if bms_activated:
+                break
             num_segments = max(self.num_straights, self.num_turns)
             
             for seg in range(num_segments):
+                if bms_activated:
+                    break
+
                 # 1. Turn Segment
                 if seg < self.num_turns:
                     dist_in_turn = 0.0
@@ -91,18 +107,47 @@ class BatterySimulator:
                         d_temp = ((q_gen - q_cool) * dt) / (self.bat_mass * self.c_p)
                         current_temp += d_temp
                         
-                        dist_in_turn += v_current * dt
+                        d_dist = v_current * dt
+                        dist_in_turn += d_dist
+                        total_dist_m += d_dist
                         current_time += dt
                         
+                        current_soc_pct = (remaining_ah / self.capacity_ah) * 100.0
+                        soc_ratio = max(0.0, min(1.0, current_soc_pct / 100.0))
+                        v_cell_ocv = 2.5 + 1.2 * soc_ratio + 0.1 * (soc_ratio ** 2)
+                        v_cell_term = v_cell_ocv - i_bat * r_cell
+                        if v_cell_term < min_cell_v_seen:
+                            min_cell_v_seen = v_cell_term
+
                         time_points.append(current_time)
-                        soc_points.append((remaining_ah / self.capacity_ah) * 100.0)
+                        soc_points.append(current_soc_pct)
                         capacity_ah_points.append(remaining_ah)
                         temp_points.append(current_temp)
                         current_points.append(i_bat)
                         speed_points.append(v_current * 3.6)
+                        dist_points.append(total_dist_m)
+
+                        if current_temp >= 60.0:
+                            bms_activated = True
+                            bms_reason_type = "temperature"
+                            bms_reason = f"Thermal Overheat: Pack temperature reached {current_temp:.1f}°C (FSAE limit: 60.0°C)"
+                            stopped_lap = lap + 1
+                            break
+                        elif v_cell_term <= 2.5:
+                            bms_activated = True
+                            bms_reason_type = "voltage"
+                            bms_reason = f"Cell terminal voltage dropped to {v_cell_term:.2f}V (minimum limit 2.5V)"
+                            stopped_lap = lap + 1
+                            break
+                        elif remaining_ah <= 0.0001 or current_soc_pct <= 0.01:
+                            bms_activated = True
+                            bms_reason_type = "soc"
+                            bms_reason = "Battery pack SOC depleted to 0.0%"
+                            stopped_lap = lap + 1
+                            break
 
                 # 2. Straight Segment
-                if seg < self.num_straights:
+                if seg < self.num_straights and not bms_activated:
                     dist_in_straight = 0.0
                     v_current = v_turn
                     a_brake = self.mu * self.g
@@ -147,16 +192,45 @@ class BatterySimulator:
                         d_temp = ((q_gen - q_cool) * dt) / (self.bat_mass * self.c_p)
                         current_temp += d_temp
                         
-                        dist_in_straight += ((v_current + v_next) / 2.0) * dt
+                        d_dist = ((v_current + v_next) / 2.0) * dt
+                        dist_in_straight += d_dist
+                        total_dist_m += d_dist
                         v_current = v_next
                         current_time += dt
                         
+                        current_soc_pct = (remaining_ah / self.capacity_ah) * 100.0
+                        soc_ratio = max(0.0, min(1.0, current_soc_pct / 100.0))
+                        v_cell_ocv = 2.5 + 1.2 * soc_ratio + 0.1 * (soc_ratio ** 2)
+                        v_cell_term = v_cell_ocv - i_bat * r_cell
+                        if v_cell_term < min_cell_v_seen:
+                            min_cell_v_seen = v_cell_term
+
                         time_points.append(current_time)
-                        soc_points.append((remaining_ah / self.capacity_ah) * 100.0)
+                        soc_points.append(current_soc_pct)
                         capacity_ah_points.append(remaining_ah)
                         temp_points.append(current_temp)
                         current_points.append(i_bat)
                         speed_points.append(v_current * 3.6)
+                        dist_points.append(total_dist_m)
+
+                        if current_temp >= 60.0:
+                            bms_activated = True
+                            bms_reason_type = "temperature"
+                            bms_reason = f"Thermal Overheat: Pack temperature reached {current_temp:.1f}°C (FSAE limit: 60.0°C)"
+                            stopped_lap = lap + 1
+                            break
+                        elif v_cell_term <= 2.5:
+                            bms_activated = True
+                            bms_reason_type = "voltage"
+                            bms_reason = f"Cell terminal voltage dropped to {v_cell_term:.2f}V (minimum limit 2.5V)"
+                            stopped_lap = lap + 1
+                            break
+                        elif remaining_ah <= 0.0001 or current_soc_pct <= 0.01:
+                            bms_activated = True
+                            bms_reason_type = "soc"
+                            bms_reason = "Battery pack SOC depleted to 0.0%"
+                            stopped_lap = lap + 1
+                            break
 
         return {
             'time': time_points,
@@ -166,13 +240,21 @@ class BatterySimulator:
             'current': current_points,
             'speed': speed_points,
             'total_time_s': current_time,
-            'lap_time_avg_s': current_time / max(1, self.num_laps),
+            'lap_time_avg_s': current_time / max(1, stopped_lap if bms_activated else self.num_laps),
             'final_soc_pct': soc_points[-1],
             'final_capacity_ah': remaining_ah,
             'final_temp_c': current_temp,
             'peak_current_a': peak_current,
             'total_energy_kwh': total_energy_kwh,
-            'v_turn_kmh': v_turn * 3.6
+            'v_turn_kmh': v_turn * 3.6,
+            'bms_activated': bms_activated,
+            'bms_reason': bms_reason,
+            'bms_reason_type': bms_reason_type,
+            'stopped_lap': stopped_lap,
+            'total_laps_requested': self.num_laps,
+            'distance_km': total_dist_m / 1000.0,
+            'min_cell_v_seen': min_cell_v_seen,
+            'dist_m': dist_points,
         }
 
     def get_track_coordinates(self):
@@ -345,7 +427,11 @@ class BatterySimulator:
             closed_x.append(x_coords[i] - w * dx)
             closed_y.append(y_coords[i] - w * dy)
 
-        return closed_x, closed_y, S
+        dxs = np.diff(closed_x)
+        dys = np.diff(closed_y)
+        actual_closed_len = float(np.sum(np.hypot(dxs, dys)))
+
+        return closed_x, closed_y, actual_closed_len
 
     def run_simulation_from_segments(self, segments, dt=0.05):
         """
@@ -353,30 +439,54 @@ class BatterySimulator:
         Each straight and turn can have its own length, radius, and angle.
         Returns the same result dict as run_simulation().
         """
+        # Compute exact closed-loop geometric track length for perfect lap distance alignment
+        _, _, track_total_geom_len = BatterySimulator.get_track_coordinates_from_segments(segments)
+        nominal_seg_len = 0.0
+        for seg in segments:
+            if seg[0] == "straight":
+                nominal_seg_len += seg[1]
+            elif seg[0] == "turn":
+                nominal_seg_len += seg[1] * math.radians(seg[2])
+
+        geom_scale = (track_total_geom_len / nominal_seg_len) if nominal_seg_len > 0 else 1.0
+
         time_points = [0.0]
         soc_points = [100.0]
         capacity_ah_points = [self.capacity_ah]
         temp_points = [self.t_ambient]
         current_points = [0.0]
         speed_points = [0.0]
+        dist_points = [0.0]
 
         remaining_ah = self.capacity_ah
         current_temp = self.t_ambient
         current_time = 0.0
         peak_current = 0.0
         total_energy_kwh = 0.0
+        total_dist_m = 0.0
+
+        bms_activated = False
+        bms_reason = ""
+        bms_reason_type = "none"
+        stopped_lap = self.num_laps
+        min_cell_v_seen = 4.2
+        n_cells_series = max(1.0, self.v_pack / 3.6)
+        r_cell = self.r_int / n_cells_series
+
         p_max_watts = self.p_max_kw * 1000.0
 
-        for _lap in range(self.num_laps):
+        for lap in range(self.num_laps):
+            if bms_activated:
+                break
             for seg in segments:
+                if bms_activated:
+                    break
                 if seg[0] == "straight":
                     straight_length = seg[1]
-                    # Need a target exit speed — use the next turn's cornering limit
-                    # For simplicity, use a generic conservative cornering speed
                     v_exit = self._find_next_turn_speed(segments, seg)
 
                     dist_in_straight = 0.0
-                    v_current = max(v_exit, 5.0)  # entry speed from previous turn
+                    v_current = max(v_exit, 5.0)
 
                     a_brake = self.mu * self.g
 
@@ -420,21 +530,49 @@ class BatterySimulator:
                         d_temp = ((q_gen - q_cool) * dt) / (self.bat_mass * self.c_p)
                         current_temp += d_temp
 
-                        dist_in_straight += ((v_current + v_next) / 2.0) * dt
+                        d_dist = ((v_current + v_next) / 2.0) * dt
+                        dist_in_straight += d_dist
+                        total_dist_m += d_dist * geom_scale
                         v_current = v_next
                         current_time += dt
 
+                        current_soc_pct = (remaining_ah / self.capacity_ah) * 100.0
+                        soc_ratio = max(0.0, min(1.0, current_soc_pct / 100.0))
+                        v_cell_ocv = 2.5 + 1.2 * soc_ratio + 0.1 * (soc_ratio ** 2)
+                        v_cell_term = v_cell_ocv - i_bat * r_cell
+                        if v_cell_term < min_cell_v_seen:
+                            min_cell_v_seen = v_cell_term
+
                         time_points.append(current_time)
-                        soc_points.append((remaining_ah / self.capacity_ah) * 100.0)
+                        soc_points.append(current_soc_pct)
                         capacity_ah_points.append(remaining_ah)
                         temp_points.append(current_temp)
                         current_points.append(i_bat)
                         speed_points.append(v_current * 3.6)
+                        dist_points.append(total_dist_m)
 
-                elif seg[0] == "turn":
+                        if current_temp >= 60.0:
+                            bms_activated = True
+                            bms_reason_type = "temperature"
+                            bms_reason = f"Thermal Overheat: Pack temperature reached {current_temp:.1f}°C (FSAE limit: 60.0°C)"
+                            stopped_lap = lap + 1
+                            break
+                        elif v_cell_term <= 2.5:
+                            bms_activated = True
+                            bms_reason_type = "voltage"
+                            bms_reason = f"Cell terminal voltage dropped to {v_cell_term:.2f}V (minimum limit 2.5V)"
+                            stopped_lap = lap + 1
+                            break
+                        elif remaining_ah <= 0.0001 or current_soc_pct <= 0.01:
+                            bms_activated = True
+                            bms_reason_type = "soc"
+                            bms_reason = "Battery pack SOC depleted to 0.0%"
+                            stopped_lap = lap + 1
+                            break
+
+                elif seg[0] == "turn" and not bms_activated:
                     turn_radius = seg[1]
                     turn_angle_deg = seg[2]
-                    # direction not needed for physics, just geometry
 
                     v_turn = math.sqrt(self.mu * self.g * turn_radius)
                     turn_arc_length = turn_radius * math.radians(turn_angle_deg)
@@ -463,15 +601,50 @@ class BatterySimulator:
                         d_temp = ((q_gen - q_cool) * dt) / (self.bat_mass * self.c_p)
                         current_temp += d_temp
 
-                        dist_in_turn += v_current * dt
+                        d_dist = v_current * dt
+                        dist_in_turn += d_dist
+                        total_dist_m += d_dist * geom_scale
                         current_time += dt
 
+                        current_soc_pct = (remaining_ah / self.capacity_ah) * 100.0
+                        soc_ratio = max(0.0, min(1.0, current_soc_pct / 100.0))
+                        v_cell_ocv = 2.5 + 1.2 * soc_ratio + 0.1 * (soc_ratio ** 2)
+                        v_cell_term = v_cell_ocv - i_bat * r_cell
+                        if v_cell_term < min_cell_v_seen:
+                            min_cell_v_seen = v_cell_term
+
                         time_points.append(current_time)
-                        soc_points.append((remaining_ah / self.capacity_ah) * 100.0)
+                        soc_points.append(current_soc_pct)
                         capacity_ah_points.append(remaining_ah)
                         temp_points.append(current_temp)
                         current_points.append(i_bat)
                         speed_points.append(v_current * 3.6)
+                        dist_points.append(total_dist_m)
+
+                        if current_temp >= 60.0:
+                            bms_activated = True
+                            bms_reason_type = "temperature"
+                            bms_reason = f"Thermal Overheat: Pack temperature reached {current_temp:.1f}°C (FSAE limit: 60.0°C)"
+                            stopped_lap = lap + 1
+                            break
+                        elif v_cell_term <= 2.5:
+                            bms_activated = True
+                            bms_reason_type = "voltage"
+                            bms_reason = f"Cell terminal voltage dropped to {v_cell_term:.2f}V (minimum limit 2.5V)"
+                            stopped_lap = lap + 1
+                            break
+                        elif remaining_ah <= 0.0001 or current_soc_pct <= 0.01:
+                            bms_activated = True
+                            bms_reason_type = "soc"
+                            bms_reason = "Battery pack SOC depleted to 0.0%"
+                            stopped_lap = lap + 1
+                            break
+
+            # Anchor completed laps precisely at track lap boundaries if not interrupted by BMS cutoff
+            if not bms_activated:
+                total_dist_m = (lap + 1) * track_total_geom_len
+                if dist_points:
+                    dist_points[-1] = total_dist_m
 
         return {
             'time': time_points,
@@ -481,14 +654,61 @@ class BatterySimulator:
             'current': current_points,
             'speed': speed_points,
             'total_time_s': current_time,
-            'lap_time_avg_s': current_time / max(1, self.num_laps),
+            'lap_time_avg_s': current_time / max(1, stopped_lap if bms_activated else self.num_laps),
             'final_soc_pct': soc_points[-1],
             'final_capacity_ah': remaining_ah,
             'final_temp_c': current_temp,
             'peak_current_a': peak_current,
             'total_energy_kwh': total_energy_kwh,
             'v_turn_kmh': 0.0,
+            'bms_activated': bms_activated,
+            'bms_reason': bms_reason,
+            'bms_reason_type': bms_reason_type,
+            'stopped_lap': stopped_lap,
+            'total_laps_requested': self.num_laps,
+            'distance_km': total_dist_m / 1000.0,
+            'min_cell_v_seen': min_cell_v_seen,
+            'dist_m': dist_points,
         }
+
+    @staticmethod
+    def get_car_position_at_distance(dist_m, x_coords, y_coords, cum_lens=None):
+        """
+        Given a total accumulated distance in meters and 2D track closed-loop coordinates,
+        returns (x_car, y_car, dx, dy, heading_deg) for vehicle animation positioning.
+        """
+        if x_coords is None or len(x_coords) < 2:
+            return 0.0, 0.0, 1.0, 0.0, 0.0
+
+        xs = np.asarray(x_coords)
+        ys = np.asarray(y_coords)
+
+        if cum_lens is None:
+            dxs = np.diff(xs)
+            dys = np.diff(ys)
+            seg_lens = np.hypot(dxs, dys)
+            cum_lens = np.insert(np.cumsum(seg_lens), 0, 0.0)
+
+        track_total_len = max(1.0, cum_lens[-1])
+        lap_dist = dist_m % track_total_len
+
+        # Find segment index
+        idx = np.searchsorted(cum_lens, lap_dist, side='right') - 1
+        idx = max(0, min(len(xs) - 2, idx))
+
+        s0 = cum_lens[idx]
+        s1 = cum_lens[idx + 1]
+        ds = max(1e-6, s1 - s0)
+        t = (lap_dist - s0) / ds
+
+        x_car = xs[idx] + t * (xs[idx + 1] - xs[idx])
+        y_car = ys[idx] + t * (ys[idx + 1] - ys[idx])
+
+        dx = xs[idx + 1] - xs[idx]
+        dy = ys[idx + 1] - ys[idx]
+        heading_deg = math.degrees(math.atan2(dy, dx))
+
+        return float(x_car), float(y_car), float(dx), float(dy), float(heading_deg)
 
     def _find_next_turn_speed(self, segments, current_seg):
         """Find the cornering speed of the next turn segment after the current one."""

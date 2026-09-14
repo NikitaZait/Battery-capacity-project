@@ -22,7 +22,7 @@ class TestBatterySimulator(unittest.TestCase):
 
     def test_f1_presets(self):
         keys = get_track_keys()
-        self.assertEqual(keys, ["monza", "monaco", "interlagos"])
+        self.assertEqual(keys, ["monza", "canada", "interlagos"])
         
         for key in keys:
             track = F1_TRACKS[key]

@@ -35,7 +35,35 @@ class BatteryApp:
 
         self.inputs_visible = True
         self.track_mode = self.MODE_CUSTOM  # "custom" or an F1 track key
+        self.pending_track_mode = self.MODE_CUSTOM
         self._saved_custom_values = {}  # store custom field values when switching to preset
+
+        # Cached track data for lightweight, zero-lag animation
+        self.cached_x_coords = None
+        self.cached_y_coords = None
+        self.cached_cum_lens = None
+        self.cached_total_len = 0.0
+        self.cached_track_extent = 1.0
+
+        # Real-time car animation state
+        self.is_animating = False
+        self.anim_idx = 0
+        self.anim_speed_val = 5.0
+        self.anim_timer_id = None
+        self.sim_res = None
+
+        self.car_dot = None
+        self.car_glow = None
+        self.car_arrow = None
+        self.car_trail = None
+        self.trail_x_coords = []
+        self.trail_y_coords = []
+
+        self.graph_line_soc = None
+        self.graph_head_soc = None
+        self.graph_line_temp = None
+        self.graph_head_temp = None
+
         self._build_ui()
         self.run_sim()
 
@@ -211,11 +239,26 @@ class BatteryApp:
             btn_run = tk.Button(self.inputs_frame, text="🚀 Run Simulation", command=self.run_sim, bg="#007acc", fg="#ffffff", font=("Arial", 10, "bold"))
             btn_run.pack(fill="x", pady=12, padx=4)
 
-        # Build Performance Plots inside graphs_frame (stacked vertically for Left Panel)
-        self.fig = Figure(figsize=(3.8, 6.5), facecolor="#1e1e1e")
+        # Build Performance Plots & BMS Banner inside graphs_frame (Left Panel)
+        if USE_CTK:
+            self.bms_banner_frame = ctk.CTkFrame(self.graphs_frame, fg_color="#3d0c0c", border_color="#ff1744", border_width=2)
+            self.bms_banner_frame.pack(fill="x", padx=4, pady=(4, 2))
+            self.bms_lbl_title = ctk.CTkLabel(self.bms_banner_frame, text="⚠️ BMS System Status", font=ctk.CTkFont(size=12, weight="bold"), text_color="#ff1744")
+            self.bms_lbl_title.pack(anchor="w", padx=8, pady=(4, 1))
+            self.bms_lbl_msg = ctk.CTkLabel(self.bms_banner_frame, text="", font=ctk.CTkFont(size=10), text_color="#ffffff", justify="left", anchor="w")
+            self.bms_lbl_msg.pack(anchor="w", padx=8, pady=(0, 6))
+        else:
+            self.bms_banner_frame = tk.Frame(self.graphs_frame, bg="#3d0c0c", bd=2, relief="solid")
+            self.bms_banner_frame.pack(fill="x", padx=4, pady=(4, 2))
+            self.bms_lbl_title = tk.Label(self.bms_banner_frame, text="⚠️ BMS System Status", fg="#ff1744", bg="#3d0c0c", font=("Arial", 10, "bold"), anchor="w")
+            self.bms_lbl_title.pack(anchor="w", padx=8, pady=(4, 1))
+            self.bms_lbl_msg = tk.Label(self.bms_banner_frame, text="", fg="#ffffff", bg="#3d0c0c", font=("Arial", 9), justify="left", anchor="w")
+            self.bms_lbl_msg.pack(anchor="w", padx=8, pady=(0, 6))
+
+        self.fig = Figure(figsize=(3.8, 5.5), facecolor="#1e1e1e")
         self.ax1 = self.fig.add_subplot(211)
         self.ax2 = self.fig.add_subplot(212)
-        self.fig.tight_layout(pad=2.5)
+        self.fig.tight_layout(pad=2.2)
 
         self.canvas = FigureCanvasTkAgg(self.fig, master=self.graphs_frame)
         self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=2, pady=2)
@@ -266,7 +309,7 @@ class BatteryApp:
         self._build_track_view_widgets()
 
     def _build_track_view_widgets(self):
-        """Creates the info header banner and main Matplotlib Bird's Eye View canvas inside track_frame."""
+        """Creates the info header banner, playback controls bar, and main Matplotlib Bird's Eye View canvas inside track_frame."""
 
         # --- Track Info Banner Header ---
         if USE_CTK:
@@ -278,7 +321,73 @@ class BatteryApp:
                 justify="left",
                 anchor="w",
             )
-            self.track_info_lbl.pack(fill="x", pady=(6, 4), padx=12)
+            self.track_info_lbl.pack(fill="x", pady=(6, 2), padx=12)
+
+            # --- Playback Controls Bar ---
+            self.controls_frame = ctk.CTkFrame(self.track_frame, fg_color="#1f1f2e", height=42)
+            self.controls_frame.pack(fill="x", padx=8, pady=(2, 6))
+
+            self.btn_play = ctk.CTkButton(
+                self.controls_frame,
+                text="⏸️ Pause",
+                width=85,
+                height=30,
+                command=self.toggle_play_pause,
+                font=ctk.CTkFont(size=12, weight="bold"),
+                fg_color="#28a745",
+                hover_color="#1e7e34",
+            )
+            self.btn_play.pack(side="left", padx=(8, 4), pady=5)
+
+            self.btn_reset = ctk.CTkButton(
+                self.controls_frame,
+                text="🔄 Reset",
+                width=75,
+                height=30,
+                command=self.reset_animation,
+                font=ctk.CTkFont(size=12, weight="bold"),
+                fg_color="#495057",
+                hover_color="#343a40",
+            )
+            self.btn_reset.pack(side="left", padx=4, pady=5)
+
+            self.btn_finish = ctk.CTkButton(
+                self.controls_frame,
+                text="⏩ Finish",
+                width=75,
+                height=30,
+                command=self.finish_animation,
+                font=ctk.CTkFont(size=12, weight="bold"),
+                fg_color="#17a2b8",
+                hover_color="#138496",
+            )
+            self.btn_finish.pack(side="left", padx=4, pady=5)
+
+            lbl_speed = ctk.CTkLabel(self.controls_frame, text="⚡ Speed:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#cccccc")
+            lbl_speed.pack(side="left", padx=(10, 2), pady=5)
+
+            self.speed_var = ctk.StringVar(value="5x")
+            self.speed_dropdown = ctk.CTkComboBox(
+                self.controls_frame,
+                values=["1x", "2x", "5x", "10x", "20x"],
+                variable=self.speed_var,
+                command=self.on_speed_changed,
+                width=65,
+                height=30,
+                state="readonly",
+                font=ctk.CTkFont(size=11, weight="bold"),
+            )
+            self.speed_dropdown.pack(side="left", padx=2, pady=5)
+
+            self.lbl_telemetry_live = ctk.CTkLabel(
+                self.controls_frame,
+                text="🏎️ Lap 1/10  |  ⏱️ 0.0 s  |  📏 0.00 km  |  ⚡ 70 km/h  |  🔋 SOC: 100.0%  |  🌡️ 25.0°C",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                text_color="#00e676",
+                anchor="e",
+            )
+            self.lbl_telemetry_live.pack(side="right", padx=(10, 12), pady=5)
+
         else:
             self.track_info_lbl = tk.Label(
                 self.track_frame,
@@ -289,7 +398,66 @@ class BatteryApp:
                 justify="left",
                 anchor="w",
             )
-            self.track_info_lbl.pack(fill="x", pady=(6, 4), padx=12)
+            self.track_info_lbl.pack(fill="x", pady=(6, 2), padx=12)
+
+            self.controls_frame = tk.Frame(self.track_frame, bg="#1f1f2e")
+            self.controls_frame.pack(fill="x", padx=8, pady=(2, 6))
+
+            self.btn_play = tk.Button(
+                self.controls_frame,
+                text="⏸️ Pause",
+                width=9,
+                command=self.toggle_play_pause,
+                bg="#28a745",
+                fg="#ffffff",
+                font=("Arial", 9, "bold"),
+            )
+            self.btn_play.pack(side="left", padx=(8, 4), pady=5)
+
+            self.btn_reset = tk.Button(
+                self.controls_frame,
+                text="🔄 Reset",
+                width=8,
+                command=self.reset_animation,
+                bg="#495057",
+                fg="#ffffff",
+                font=("Arial", 9, "bold"),
+            )
+            self.btn_reset.pack(side="left", padx=4, pady=5)
+
+            self.btn_finish = tk.Button(
+                self.controls_frame,
+                text="⏩ Finish",
+                width=8,
+                command=self.finish_animation,
+                bg="#17a2b8",
+                fg="#ffffff",
+                font=("Arial", 9, "bold"),
+            )
+            self.btn_finish.pack(side="left", padx=4, pady=5)
+
+            lbl_speed = tk.Label(self.controls_frame, text="⚡ Speed:", fg="#cccccc", bg="#1f1f2e", font=("Arial", 9, "bold"))
+            lbl_speed.pack(side="left", padx=(10, 2), pady=5)
+
+            self.speed_var = tk.StringVar(value="5x")
+            self.speed_dropdown = tk.OptionMenu(
+                self.controls_frame,
+                self.speed_var,
+                "1x", "2x", "5x", "10x", "20x",
+                command=self.on_speed_changed,
+            )
+            self.speed_dropdown.configure(bg="#2d2d2d", fg="#ffffff", font=("Arial", 9, "bold"))
+            self.speed_dropdown.pack(side="left", padx=2, pady=5)
+
+            self.lbl_telemetry_live = tk.Label(
+                self.controls_frame,
+                text="🏎️ Lap 1/10  |  ⏱️ 0.0 s  |  📏 0.00 km  |  ⚡ 70 km/h  |  🔋 SOC: 100.0%  |  🌡️ 25.0°C",
+                fg="#00e676",
+                bg="#1f1f2e",
+                font=("Arial", 9, "bold"),
+                anchor="e",
+            )
+            self.lbl_telemetry_live.pack(side="right", padx=(10, 12), pady=5)
 
         # --- Main Track View Matplotlib Canvas ---
         self.fig_track = Figure(figsize=(8, 6), facecolor="#181818")
@@ -300,19 +468,19 @@ class BatteryApp:
         self.canvas_track.get_tk_widget().pack(fill="both", expand=True, padx=4, pady=4)
 
     def _on_track_mode_changed(self, selected_value):
-        """Called when the track dropdown selection changes."""
+        """Called when the track dropdown selection changes. Updates UI parameter fields but defers simulation update until 'Run Simulation' is pressed."""
         new_mode = self._dropdown_key_map.get(selected_value, self.MODE_CUSTOM)
 
-        if new_mode == self.track_mode:
+        if new_mode == self.pending_track_mode:
             return
 
-        if new_mode != self.MODE_CUSTOM and self.track_mode == self.MODE_CUSTOM:
+        if new_mode != self.MODE_CUSTOM and self.pending_track_mode == self.MODE_CUSTOM:
             # Switching FROM custom TO preset — save current custom values
             self._saved_custom_values = {}
             for key in self._track_geometry_keys:
                 self._saved_custom_values[key] = self.entries[key].get()
 
-        self.track_mode = new_mode
+        self.pending_track_mode = new_mode
 
         if new_mode == self.MODE_CUSTOM:
             # Restore custom values and re-enable fields
@@ -360,9 +528,6 @@ class BatteryApp:
                     entry.delete(0, tk.END)
                     entry.insert(0, preset_values.get(key, ""))
                     entry.configure(state="disabled", disabledforeground="#666666")
-
-        # Re-run sim & update track view
-        self.run_sim()
 
     def _set_track_fields_editable(self, editable):
         """Enable or disable the track geometry input fields."""
@@ -421,7 +586,7 @@ class BatteryApp:
 
             sim = BatterySimulator(track_config=track_config)
             x_coords, y_coords, total_len = sim.get_track_coordinates()
-            info_text = f"Custom Track\nLength: {total_len:,.0f} m   |   Turns: {track_config['num_turns']}"
+            info_text = f"🔧 Custom Track  |  Length: {total_len:,.0f} m"
             return x_coords, y_coords, total_len, "Custom Track", info_text, None
 
     def draw_track_view(self):
@@ -440,6 +605,15 @@ class BatteryApp:
         xs = np.array(x_coords)
         ys = np.array(y_coords)
 
+        # Cache track arrays for lightweight, zero-allocation animation
+        self.cached_x_coords = xs
+        self.cached_y_coords = ys
+        self.cached_total_len = total_len
+        dxs = np.diff(xs)
+        dys = np.diff(ys)
+        seg_lens = np.hypot(dxs, dys)
+        self.cached_cum_lens = np.insert(np.cumsum(seg_lens), 0, 0.0)
+
         # --- Compute track normals for edge lines & curb markers ---
         # Tangent vectors (forward differences, wrapped)
         dx = np.diff(xs, append=xs[0])
@@ -457,6 +631,7 @@ class BatteryApp:
         x_range = xs.max() - xs.min()
         y_range = ys.max() - ys.min()
         track_extent = max(x_range, y_range, 1.0)
+        self.cached_track_extent = track_extent
         # Scale the road width relative to the track extent
         road_half_width = track_extent * 0.012
         edge_offset = road_half_width * 1.05
@@ -510,6 +685,14 @@ class BatteryApp:
         margin = track_extent * 0.08
         self.ax_track.set_xlim(xs.min() - margin, xs.max() + margin)
         self.ax_track.set_ylim(ys.min() - margin, ys.max() + margin)
+
+        # 8. Create Car Artists for real-time motion
+        self.car_trail, = self.ax_track.plot([], [], color="#00e676", linewidth=2.0, alpha=0.55, zorder=18)
+        self.car_glow, = self.ax_track.plot([], [], "o", color="#ff1744", markersize=16, alpha=0.35, zorder=19)
+        self.car_dot, = self.ax_track.plot([], [], "o", color="#ff1744", markersize=9, markeredgecolor="#ffffff", markeredgewidth=1.2, zorder=20)
+        self.car_arrow, = self.ax_track.plot([], [], color="#ffffff", linewidth=2.2, zorder=21)
+        self.trail_x_coords = []
+        self.trail_y_coords = []
 
         self.fig_track.tight_layout(pad=0.5)
         self.canvas_track.draw()
@@ -575,6 +758,7 @@ class BatteryApp:
                 idx += num_pts
 
     def run_sim(self):
+        self.track_mode = self.pending_track_mode
         try:
             get_val = lambda k: float(self.entries[k].get())
             
@@ -628,18 +812,89 @@ class BatteryApp:
             messagebox.showerror("Input Error", "Please enter valid numeric values for all parameters.")
             return
 
-        # Update Summary Cards safely across both CustomTkinter and standard Tkinter
-        self.cards["soc"].configure(text=f"{res['final_soc_pct']:.1f}% ({res['final_capacity_ah']:.2f} Ah)")
-        
-        temp_color = "#dc3545" if res['final_temp_c'] > 60 else ("#ffc107" if res['final_temp_c'] > 45 else "#28a745")
-        if USE_CTK:
-            self.cards["temp"].configure(text=f"{res['final_temp_c']:.1f} °C", text_color=temp_color)
+        # Check BMS Shutdown Status
+        bms_activated = res.get('bms_activated', False)
+        bms_reason = res.get('bms_reason', '')
+        bms_reason_type = res.get('bms_reason_type', 'none')
+        stopped_lap = res.get('stopped_lap', 1)
+        total_laps = res.get('total_laps_requested', num_laps)
+        distance_km = res.get('distance_km', 0.0)
+
+        # Update BMS Safety Alert Banner in Left Panel
+        if bms_activated:
+            if bms_reason_type == "temperature":
+                title_text = "🔥 BMS Thermal Shutdown (T ≥ 60.0°C)"
+            elif bms_reason_type == "voltage":
+                title_text = "⚡ BMS Low-Voltage Shutdown (V < 2.5V)"
+            elif bms_reason_type == "soc":
+                title_text = "🪫 BMS Capacity Depletion (0% SOC)"
+            else:
+                title_text = "⚠️ BMS System Activated — Race Terminated"
+
+            banner_bg = "#3d0c0c"
+            banner_border = "#ff1744"
+            msg_text = (
+                f"You did not make it to finish!\n"
+                f"• Stopped at Lap {stopped_lap} of {total_laps} ({distance_km:.2f} km driven)\n"
+                f"• Trigger: {bms_reason}"
+            )
+            if USE_CTK:
+                self.bms_banner_frame.configure(fg_color=banner_bg, border_color=banner_border)
+                self.bms_lbl_title.configure(text=title_text, text_color="#ff1744")
+                self.bms_lbl_msg.configure(text=msg_text, text_color="#ff8a80")
+            else:
+                self.bms_banner_frame.configure(bg=banner_bg)
+                self.bms_lbl_title.configure(text=title_text, fg="#ff1744", bg=banner_bg)
+                self.bms_lbl_msg.configure(text=msg_text, fg="#ff8a80", bg=banner_bg)
         else:
-            self.cards["temp"].configure(text=f"{res['final_temp_c']:.1f} °C", fg=temp_color)
+            title_text = "✅ Race Completed Successfully"
+            banner_bg = "#0c2d1c"
+            banner_border = "#28a745"
+            msg_text = (
+                f"Completed all {total_laps} Laps ({distance_km:.2f} km driven)\n"
+                f"• Battery Pack voltage, SOC, and Temperature (< 60°C) remained OK."
+            )
+            if USE_CTK:
+                self.bms_banner_frame.configure(fg_color=banner_bg, border_color=banner_border)
+                self.bms_lbl_title.configure(text=title_text, text_color="#28a745")
+                self.bms_lbl_msg.configure(text=msg_text, text_color="#a3e635")
+            else:
+                self.bms_banner_frame.configure(bg=banner_bg)
+                self.bms_lbl_title.configure(text=title_text, fg="#28a745", bg=banner_bg)
+                self.bms_lbl_msg.configure(text=msg_text, fg="#a3e635", bg=banner_bg)
+
+        # Update Summary Cards safely
+        if bms_activated:
+            soc_card_text = f"{res['final_soc_pct']:.1f}% (DNF L{stopped_lap})" if bms_reason_type != "soc" else "0.0% (Cutoff L{stopped_lap})"
+            soc_card_color = "#ff1744" if bms_reason_type == "soc" else "#ffc107"
+            time_card_text = f"{res['total_time_s']:.1f} s (DNF Lap {stopped_lap})"
+        else:
+            soc_card_text = f"{res['final_soc_pct']:.1f}% ({res['final_capacity_ah']:.2f} Ah)"
+            soc_card_color = "#28a745"
+            time_card_text = f"{res['total_time_s']:.1f} s ({res['lap_time_avg_s']:.1f} s/lap)"
+
+        if USE_CTK:
+            self.cards["soc"].configure(text=soc_card_text, text_color=soc_card_color)
+        else:
+            self.cards["soc"].configure(text=soc_card_text, fg=soc_card_color)
+
+        if bms_activated and bms_reason_type == "temperature":
+            temp_text = f"{res['final_temp_c']:.1f} °C (FSAE 60°C Cutoff)"
+            temp_color = "#ff1744"
+        else:
+            temp_text = f"{res['final_temp_c']:.1f} °C"
+            temp_color = "#dc3545" if res['final_temp_c'] >= 60 else ("#ffc107" if res['final_temp_c'] > 45 else "#28a745")
+
+        if USE_CTK:
+            self.cards["temp"].configure(text=temp_text, text_color=temp_color)
+        else:
+            self.cards["temp"].configure(text=temp_text, fg=temp_color)
 
         self.cards["energy"].configure(text=f"{res['total_energy_kwh']:.2f} kWh")
-        self.cards["time"].configure(text=f"{res['total_time_s']:.1f} s ({res['lap_time_avg_s']:.1f} s/lap)")
+        self.cards["time"].configure(text=time_card_text)
         self.cards["peak_i"].configure(text=f"{res['peak_current_a']:.1f} A")
+
+        self.sim_res = res
 
         # Update Main Performance Plots
         self.ax1.clear()
@@ -654,13 +909,14 @@ class BatteryApp:
             for spine in ax.spines.values():
                 spine.set_color("#555555")
 
-        self.ax1.plot(res['time'], res['soc'], color="#00bc8c", linewidth=2)
+        # Static background traces
+        self.ax1.plot(res['time'], res['soc'], color="#3a3a3a", linestyle=":", linewidth=1.5, alpha=0.6)
         self.ax1.set_title("Battery State of Charge (%)")
         self.ax1.set_xlabel("Time (s)")
         self.ax1.set_ylabel("SOC (%)")
         self.ax1.grid(True, linestyle="--", alpha=0.3)
 
-        self.ax2.plot(res['time'], res['temp'], color="#e74c3c", linewidth=2)
+        self.ax2.plot(res['time'], res['temp'], color="#3a3a3a", linestyle=":", linewidth=1.5, alpha=0.6)
         self.ax2.axhline(60, color="#f39c12", linestyle=":", label="60°C Limit")
         self.ax2.set_title("Battery Pack Temperature (°C)")
         self.ax2.set_xlabel("Time (s)")
@@ -668,11 +924,234 @@ class BatteryApp:
         self.ax2.legend(facecolor="#2b2b2b", labelcolor="#ffffff")
         self.ax2.grid(True, linestyle="--", alpha=0.3)
 
+        # Active dynamic real-time plot artists
+        self.graph_line_soc, = self.ax1.plot([], [], color="#00bc8c", linewidth=2.2, zorder=5)
+        self.graph_head_soc, = self.ax1.plot([], [], "o", color="#00e676", markersize=7, markeredgecolor="#ffffff", zorder=6)
+
+        self.graph_line_temp, = self.ax2.plot([], [], color="#e74c3c", linewidth=2.2, zorder=5)
+        self.graph_head_temp, = self.ax2.plot([], [], "o", color="#ff1744", markersize=7, markeredgecolor="#ffffff", zorder=6)
+
+        max_t = max(1.0, max(res['time'])) if res['time'] else 1.0
+        self.ax1.set_xlim(0, max_t)
+        self.ax1.set_ylim(-2, 105)
+        self.ax2.set_xlim(0, max_t)
+        self.ax2.set_ylim(min(20.0, min(res['temp']) - 3), max(65.0, max(res['temp']) + 5))
+
+        # Plot BMS Cutoff indicator line on graphs if activated
+        if bms_activated and res['time']:
+            stop_t = res['time'][-1]
+            tag_label = "🔥 THERMAL 60°C" if bms_reason_type == "temperature" else ("⚡ VOLTAGE 2.5V" if bms_reason_type == "voltage" else "🪫 SOC 0%")
+            
+            self.ax1.axvline(stop_t, color="#ff1744", linestyle="--", linewidth=1.8, label="BMS Cutoff")
+            self.ax1.annotate(
+                f"⚠️ {tag_label}\nLap {stopped_lap}",
+                xy=(stop_t, res['soc'][-1]),
+                xytext=(stop_t * 0.82, max(15, res['soc'][-1] + 15)),
+                arrowprops=dict(facecolor="#ff1744", shrink=0.05, width=1.5, headwidth=6),
+                color="#ff1744", fontweight="bold", fontsize=8,
+                bbox=dict(boxstyle="round,pad=0.2", facecolor="#1e1e1e", edgecolor="#ff1744", alpha=0.9)
+            )
+            self.ax2.axvline(stop_t, color="#ff1744", linestyle="--", linewidth=1.8, label="BMS Cutoff")
+            self.ax2.annotate(
+                f"⚠️ {tag_label}\nLap {stopped_lap}",
+                xy=(stop_t, res['temp'][-1]),
+                xytext=(stop_t * 0.82, max(30, res['temp'][-1] - 10)),
+                arrowprops=dict(facecolor="#ff1744", shrink=0.05, width=1.5, headwidth=6),
+                color="#ff1744", fontweight="bold", fontsize=8,
+                bbox=dict(boxstyle="round,pad=0.2", facecolor="#1e1e1e", edgecolor="#ff1744", alpha=0.9)
+            )
+
         self.fig.tight_layout()
         self.canvas.draw()
 
-        # Always update track view (now permanently visible in main right area)
+        # Update track view canvas and start real-time car animation
         self.draw_track_view()
+        self.start_animation()
+
+    def on_speed_changed(self, choice):
+        """Called when speed multiplier option is selected."""
+        try:
+            val = float(choice.replace("x", ""))
+            self.anim_speed_val = val
+        except ValueError:
+            self.anim_speed_val = 5.0
+
+    def toggle_play_pause(self):
+        """Toggles animation play/pause state."""
+        if self.is_animating:
+            self.is_animating = False
+            if self.anim_timer_id is not None:
+                self.root.after_cancel(self.anim_timer_id)
+                self.anim_timer_id = None
+            if USE_CTK:
+                self.btn_play.configure(text="▶️ Play", fg_color="#1f538d", hover_color="#14375e")
+            else:
+                self.btn_play.configure(text="▶️ Play", bg="#007acc")
+        else:
+            if self.sim_res is None or not self.sim_res.get('time'):
+                return
+            if self.anim_idx >= len(self.sim_res['time']) - 1:
+                self.anim_idx = 0
+                self.trail_x_coords.clear()
+                self.trail_y_coords.clear()
+                self.render_frame_at_index(0)
+            self.is_animating = True
+            if USE_CTK:
+                self.btn_play.configure(text="⏸️ Pause", fg_color="#28a745", hover_color="#1e7e34")
+            else:
+                self.btn_play.configure(text="⏸️ Pause", bg="#28a745")
+            self.animate_frame()
+
+    def reset_animation(self):
+        """Resets car, telemetry, and graph playback to beginning (frame 0)."""
+        if self.anim_timer_id is not None:
+            self.root.after_cancel(self.anim_timer_id)
+            self.anim_timer_id = None
+        self.is_animating = False
+        self.anim_idx = 0
+        self.trail_x_coords.clear()
+        self.trail_y_coords.clear()
+        if USE_CTK:
+            self.btn_play.configure(text="▶️ Play", fg_color="#1f538d", hover_color="#14375e")
+        else:
+            self.btn_play.configure(text="▶️ Play", bg="#007acc")
+        self.render_frame_at_index(0)
+
+    def finish_animation(self):
+        """Instantly jumps playback to the final simulation frame."""
+        if self.sim_res is None or not self.sim_res.get('time'):
+            return
+
+        if self.anim_timer_id is not None:
+            self.root.after_cancel(self.anim_timer_id)
+            self.anim_timer_id = None
+
+        self.is_animating = False
+        times = self.sim_res['time']
+        self.anim_idx = len(times) - 1
+
+        # Clear motion trail so no connecting line cuts across the circuit
+        self.trail_x_coords.clear()
+        self.trail_y_coords.clear()
+
+        if USE_CTK:
+            self.btn_play.configure(text="▶️ Play", fg_color="#1f538d", hover_color="#14375e")
+        else:
+            self.btn_play.configure(text="▶️ Play", bg="#007acc")
+
+        self.render_frame_at_index(self.anim_idx)
+
+    def start_animation(self):
+        """Starts real-time playback from frame 0."""
+        if self.anim_timer_id is not None:
+            self.root.after_cancel(self.anim_timer_id)
+            self.anim_timer_id = None
+        self.anim_idx = 0
+        self.trail_x_coords.clear()
+        self.trail_y_coords.clear()
+        self.render_frame_at_index(0)
+        self.is_animating = True
+        if USE_CTK:
+            self.btn_play.configure(text="⏸️ Pause", fg_color="#28a745", hover_color="#1e7e34")
+        else:
+            self.btn_play.configure(text="⏸️ Pause", bg="#28a745")
+        self.anim_timer_id = self.root.after(30, self.animate_frame)
+
+    def render_frame_at_index(self, idx):
+        """Renders car position, trail, telemetry, and graph traces for step index using cached track data."""
+        if self.sim_res is None:
+            return
+
+        times = self.sim_res.get('time', [])
+        if not times or idx < 0 or idx >= len(times):
+            return
+
+        t_curr = times[idx]
+        soc_curr = self.sim_res['soc'][idx]
+        temp_curr = self.sim_res['temp'][idx]
+        dist_curr = self.sim_res['dist_m'][idx]
+        dist_km = dist_curr / 1000.0
+
+        total_len = self.cached_total_len or 1.0
+        total_laps = self.sim_res.get('total_laps_requested', 10)
+        lap_num = min(total_laps, int(dist_curr // max(1.0, total_len)) + 1)
+
+        # Update live progress header label right above track
+        telemetry_text = f"🏎️ Lap {lap_num}/{total_laps}  |  ⏱️ {t_curr:.1f} s  |  📏 {dist_km:.2f} km  |  ⚡ 70 km/h  |  🔋 SOC: {soc_curr:.1f}%  |  🌡️ {temp_curr:.1f}°C"
+        self.lbl_telemetry_live.configure(text=telemetry_text)
+
+        # Update Car Marker position on track canvas
+        if self.cached_x_coords is not None and len(self.cached_x_coords) >= 2 and self.car_dot is not None:
+            x_car, y_car, dx, dy, heading = BatterySimulator.get_car_position_at_distance(
+                dist_curr, self.cached_x_coords, self.cached_y_coords, cum_lens=self.cached_cum_lens
+            )
+            self.car_dot.set_data([x_car], [y_car])
+            self.car_glow.set_data([x_car], [y_car])
+
+            # Direction arrow vector
+            arrow_len = self.cached_track_extent * 0.035
+            norm = math.hypot(dx, dy) or 1.0
+            ax_x = x_car + (dx / norm) * arrow_len
+            ax_y = y_car + (dy / norm) * arrow_len
+            self.car_arrow.set_data([x_car, ax_x], [y_car, ax_y])
+
+            # Motion trail: clear if jump is detected to prevent lines crossing the track
+            if self.trail_x_coords:
+                last_x = self.trail_x_coords[-1]
+                last_y = self.trail_y_coords[-1]
+                jump_dist = math.hypot(x_car - last_x, y_car - last_y)
+                if jump_dist > max(30.0, self.cached_track_extent * 0.08):
+                    self.trail_x_coords.clear()
+                    self.trail_y_coords.clear()
+
+            self.trail_x_coords.append(x_car)
+            self.trail_y_coords.append(y_car)
+            if len(self.trail_x_coords) > 18:
+                self.trail_x_coords.pop(0)
+                self.trail_y_coords.pop(0)
+            self.car_trail.set_data(self.trail_x_coords, self.trail_y_coords)
+
+        # Update dynamic moving graph lines
+        if self.graph_line_soc and self.graph_head_soc:
+            self.graph_line_soc.set_data(times[:idx+1], self.sim_res['soc'][:idx+1])
+            self.graph_head_soc.set_data([t_curr], [soc_curr])
+
+        if self.graph_line_temp and self.graph_head_temp:
+            self.graph_line_temp.set_data(times[:idx+1], self.sim_res['temp'][:idx+1])
+            self.graph_head_temp.set_data([t_curr], [temp_curr])
+
+        self.canvas_track.draw_idle()
+        if idx % 2 == 0 or idx == len(times) - 1:
+            self.canvas.draw_idle()
+
+    def animate_frame(self):
+        """Main real-time playback loop step."""
+        if not self.is_animating or self.sim_res is None:
+            return
+
+        times = self.sim_res.get('time', [])
+        if not times or self.anim_idx >= len(times) - 1:
+            self.is_animating = False
+            if USE_CTK:
+                self.btn_play.configure(text="▶️ Play", fg_color="#1f538d", hover_color="#14375e")
+            else:
+                self.btn_play.configure(text="▶️ Play", bg="#007acc")
+            return
+
+        step = max(1, int(round(self.anim_speed_val * 0.6)))
+        self.anim_idx = min(len(times) - 1, self.anim_idx + step)
+
+        self.render_frame_at_index(self.anim_idx)
+
+        if self.anim_idx >= len(times) - 1:
+            self.is_animating = False
+            if USE_CTK:
+                self.btn_play.configure(text="▶️ Play", fg_color="#1f538d", hover_color="#14375e")
+            else:
+                self.btn_play.configure(text="▶️ Play", bg="#007acc")
+            return
+
+        self.anim_timer_id = self.root.after(30, self.animate_frame)
 
 
 def main():

@@ -3,7 +3,7 @@ F1 Preset Track Definitions
 ============================
 Contains hardcoded segment-based track layouts for 3 iconic Formula 1 circuits:
 - Autodromo Nazionale Monza (Italy)
-- Circuit de Monaco (Monaco)
+- Circuit Gilles Villeneuve (Canada)
 - Autódromo José Carlos Pace / Interlagos (Brazil)
 
 Segment types:
@@ -59,58 +59,50 @@ F1_TRACKS = {
             ("straight", 400),
         ],
     },
-    "monaco": {
-        "name": "Circuit de Monaco",
-        "country": "Monaco",
-        "flag": "\U0001f1f2\U0001f1e8",
-        "total_length_m": 3337,
-        "num_turns": 19,
-        "lap_record": "1:12.909 \u2014 Lewis Hamilton, 2021",
+    "canada": {
+        "name": "Circuit Gilles Villeneuve",
+        "country": "Canada",
+        "flag": "\U0001f1e8\U0001f1e6",
+        "total_length_m": 4361,
+        "num_turns": 14,
+        "lap_record": "1:13.078 \u2014 Valtteri Bottas, 2019",
         "segments": [
-            # Start/Finish straight (short) then Sainte Devote
-            ("straight", 180),
-            ("turn", 35, 75, "right"),
-            # Climb to Casino / Massenet
-            ("straight", 320),
-            ("turn", 45, 65, "left"),
-            # Casino Square area
-            ("straight", 80),
-            ("turn", 30, 60, "right"),
-            # Mirabeau
-            ("straight", 120),
-            ("turn", 20, 80, "right"),
-            # Hairpin (Grand Hotel / Loews) - LEFT TURN
-            ("straight", 40),
-            ("turn", 12, 160, "left"),
-            # Mirabeau Bas to Portier
-            ("straight", 70),
-            ("turn", 22, 85, "right"),
-            # Tunnel straight
-            ("straight", 360),
-            # Nouvelle Chicane
-            ("turn", 18, 50, "left"),
-            ("straight", 40),
-            ("turn", 18, 50, "right"),
-            # Tabac corner
-            ("straight", 140),
-            ("turn", 28, 65, "left"),
-            # Swimming pool chicane
-            ("straight", 70),
-            ("turn", 18, 55, "right"),
-            ("straight", 40),
-            ("turn", 18, 55, "left"),
-            ("straight", 50),
-            ("turn", 18, 55, "left"),
+            # Start/Finish straight to Senna S
+            ("straight", 420),
+            # Turns 1 & 2: Senna S (Left 60°, tight Right hairpin 150°)
+            ("turn", 30, 60, "left"),
+            ("straight", 35),
+            ("turn", 18, 150, "right"),
+            # Run to Turn 3 & 4 chicane
+            ("straight", 350),
+            ("turn", 25, 70, "right"),
             ("straight", 30),
-            ("turn", 18, 55, "right"),
-            # Rascasse
-            ("straight", 100),
-            ("turn", 14, 135, "right"),
-            # Anthony Noghes
-            ("straight", 50),
+            ("turn", 25, 70, "left"),
+            # Run to Turn 5
+            ("straight", 260),
+            ("turn", 80, 30, "left"),
+            # Run to Turn 6 & 7 chicane
+            ("straight", 320),
+            ("turn", 22, 75, "left"),
+            ("straight", 35),
             ("turn", 22, 75, "right"),
-            # Close back to start
-            ("straight", 100),
+            # Straight along Olympic basin to Turn 8 & 9 chicane
+            ("straight", 480),
+            ("turn", 25, 70, "right"),
+            ("straight", 35),
+            ("turn", 25, 70, "left"),
+            # Run to L'Épingle hairpin
+            ("straight", 420),
+            # Turn 10: L'Épingle (tight hairpin right)
+            ("turn", 15, 170, "right"),
+            # Casino Back Straight (very long)
+            ("straight", 1253),
+            # Turns 13 & 14: Wall of Champions chicane
+            ("turn", 20, 80, "right"),
+            ("straight", 40),
+            ("turn", 20, 80, "left"),
+            # Final pit straight link back to start
+            ("straight", 280),
         ],
     },
     "interlagos": {
@@ -169,20 +161,16 @@ F1_TRACKS = {
 
 def get_track_keys():
     """Returns list of track keys in display order (Monza first)."""
-    return ["monza", "monaco", "interlagos"]
+    return ["monza", "canada", "interlagos"]
 
 
 def get_track_display_name(key):
-    """Returns a formatted display string for the dropdown, e.g. '\U0001f1f2\U0001f1e8 Monaco - Circuit de Monaco'."""
+    """Returns a formatted display string for the dropdown, e.g. '\U0001f1e8\U0001f1e6 Canada — Circuit Gilles Villeneuve'."""
     t = F1_TRACKS[key]
     return f"{t['flag']} {t['country']} \u2014 {t['name']}"
 
 
 def get_track_info_text(key):
-    """Returns a multi-line info string for the track info card."""
+    """Returns essential single-line track info (Flag, Country, Name, Length)."""
     t = F1_TRACKS[key]
-    return (
-        f"{t['flag']}  {t['name']}\n"
-        f"Length: {t['total_length_m']:,} m   |   Turns: {t['num_turns']}\n"
-        f"Lap Record: {t['lap_record']}"
-    )
+    return f"{t['flag']} {t['country']} \u2014 {t['name']}  |  Length: {t['total_length_m']:,} m"
